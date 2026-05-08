@@ -40,3 +40,9 @@ class EntryPointError(BootstrapError):
     """Entry-point parse, import, attribute, or return-value coercion failure (exit 2)."""
 
     exit_code = 2
+
+
+class ArchiveError(BootstrapError):
+    """Archive resolution failed: empty sys.argv[0] or path is not a zipfile (exit 1)."""
+
+    exit_code = 1
