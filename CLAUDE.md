@@ -1,6 +1,12 @@
 # CLAUDE.md
 
-Operating notes for future Claude instances working in this repo. Read `IMPLEMENTATION_PLAN.md` for the full design and rationale; this file captures the rules and conventions that aren't obvious from the code.
+Operating notes for future Claude instances working in this repo.
+
+**For design contracts, read `specs/`** — the foundational specifications that drive implementation. Start with `specs/README.md`, then `specs/00-architecture.md` for the system view, then the component specs. `specs/CROSS_CUTTING_DECISIONS.md` is binding when any spec disagrees with it.
+
+`IMPLEMENTATION_PLAN.md` (in the repo root) captures the original design rationale and is preserved for context, but the specs in `specs/` are the canonical contract.
+
+This file captures rules and conventions that aren't obvious from the code or the specs.
 
 ## What this project is
 
