@@ -54,6 +54,37 @@ from _bootstrap import bootstrap
 sys.exit(bootstrap())
 ```
 
+## Development practices
+
+**Test-driven development.** The specs in `specs/` already enumerate falsifiable invariants, and many name explicit test files (e.g. `tests/unit/test_bootstrap_stdlib_only.py`, `tests/unit/test_builder_preflight.py::test_parent_missing_exits_7`). Workflow per change:
+
+1. Pick the spec invariant or named test ID you're implementing.
+2. Write the failing test first. Run it. Confirm it fails for the expected reason.
+3. Make it pass with the smallest change that works.
+4. Refactor with the test green.
+5. Commit the test and production code together.
+
+Don't write production code without a failing test. Don't write speculative tests for behavior the specs don't require. When a critique surfaces a missing edge case, add the test first, then fix.
+
+**Stepdown rule — modules read like a book.** Every module is laid out top-to-bottom in order of decreasing abstraction. A reader doing `from moonlit.builder import build` and scrolling top-to-bottom should understand what `build` does without ever scrolling backward.
+
+- Module docstring at the top.
+- Public API immediately below — the names another module would import.
+- The highest-level function defined first; the functions it calls appear below, in the order they're called.
+- Private helpers at the bottom.
+
+If you find yourself jumping up the file to understand a downstream function, the module is in the wrong order — reorder before merging. Same rule applies inside `_bootstrap/`: `bootstrap()` at the top of `__init__.py`; the helpers it dispatches to follow in call order across `environment.py`, `extract.py`, `runner.py`.
+
+**Clean-code defaults** (beyond the system prompt's guidance):
+
+- Small functions, one job each. If a function does two things, split it.
+- Names describe intent, not implementation: `compute_build_id`, not `do_sha256`. `materialize`, not `do_extract_step`.
+- Guard clauses over deep nesting. Return early on the error path; keep the happy path unindented.
+- Pure functions wherever possible — especially in `hashing.py`, `workspace.py`, and `_bootstrap/extract.py`. Pure functions test trivially and don't need fixtures.
+- Errors are part of the design, not afterthoughts. Every `MoonlitError` subclass has a stable `exit_code`; raise the right one as early as the spec's preflight order allows (CLI spec §4 is authoritative).
+- No dead code, no commented-out blocks, no `_unused` variables left as breadcrumbs. If it's not called, delete it.
+- Side effects live at the boundary (CLI layer, `resolver.py` subprocess calls, file I/O). Pure logic in the middle.
+
 ## Invariants — don't break these
 
 - **Build-id determinism**: `hashing.compute_build_id` hashes sorted relative paths (forward-slash, regardless of platform) interleaved with file content, separated by `\0`. Cache correctness depends on this being deterministic across runs of the same staging dir.
