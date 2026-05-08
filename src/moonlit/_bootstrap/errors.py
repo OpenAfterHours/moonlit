@@ -28,3 +28,15 @@ class ExtractionError(BootstrapError):
     """Archive extraction failure or unsafe arcname (exit 1)."""
 
     exit_code = 1
+
+
+class CollisionError(BootstrapError):
+    """``_bootstrap`` collision in the staged site-packages tree (exit 1)."""
+
+    exit_code = 1
+
+
+class EntryPointError(BootstrapError):
+    """Entry-point parse, import, attribute, or return-value coercion failure (exit 2)."""
+
+    exit_code = 2
