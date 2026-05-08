@@ -16,3 +16,15 @@ class EnvJsonError(BootstrapError):
     """env.json missing, archive unreadable, or D8 validation failure (exit 1)."""
 
     exit_code = 1
+
+
+class LockTimeoutError(BootstrapError):
+    """Lock acquisition exceeded the wall-clock timeout (exit 3)."""
+
+    exit_code = 3
+
+
+class ExtractionError(BootstrapError):
+    """Archive extraction failure or unsafe arcname (exit 1)."""
+
+    exit_code = 1
