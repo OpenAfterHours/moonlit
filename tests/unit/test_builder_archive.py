@@ -366,7 +366,17 @@ def test_exec_bit_is_propagated_to_zipinfo(tmp_path: Path) -> None:
         "moonlit_version": "0.1.0",
         "python_shebang": "/usr/bin/python3",
     }
-    builder._create_archive(tmp_out, staging, env_dict, "/usr/bin/python3")
+    config = BuildConfig(
+        project_root=tmp_path,
+        output_path=tmp_out,
+        entry_point="x:y",
+        console_script=None,
+        python_shebang="/usr/bin/python3",
+        package=None,
+        force=False,
+        verbosity=0,
+    )
+    builder._create_archive(tmp_out, staging, env_dict, config)
 
     with zipfile.ZipFile(tmp_out, "r") as zf:
         exec_info = zf.getinfo("site-packages/scripts/myscript")
