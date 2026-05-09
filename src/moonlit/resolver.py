@@ -5,14 +5,21 @@ Each public function corresponds to one step of the build pipeline
 (steps 4 and 6), ``build_wheel`` (step 5). All ``subprocess.run`` invocations
 use the pinned kwargs ``shell=False, check=False, capture_output=True,
 env=os.environ.copy()``; argv is constructed only inside this module.
+
+When the caller passes ``verbosity >= 1`` (CLI ``--verbose``), each uv
+invocation is echoed to stderr as ``+ uv <argv>`` (POSIX shlex format) per
+spec 01 §8, via :func:`moonlit._progress.emit_aside` so the output stays
+coherent with any active progress spinner.
 """
 
 import os
 import re
+import shlex
 import subprocess
 import sys
 from pathlib import Path
 
+from . import _progress
 from .errors import (
     ExportError,
     InternalError,
@@ -30,6 +37,7 @@ def export(
     output_file: Path,
     *,
     package: str | None = None,
+    verbosity: int = 0,
 ) -> None:
     """Run ``uv export`` to write a frozen requirements file (step 3).
 
@@ -53,7 +61,7 @@ def export(
         argv += ["--package", package]
     argv += ["--output-file", str(output_file)]
 
-    proc = _run_uv(argv, cwd=project_root)
+    proc = _run_uv(argv, cwd=project_root, verbosity=verbosity)
     if proc.returncode == 0:
         return
 
@@ -71,6 +79,7 @@ def pip_install_target(
     *,
     requirement: Path | None = None,
     wheel: Path | None = None,
+    verbosity: int = 0,
 ) -> None:
     """Run ``uv pip install --target`` (step 4 with requirement, step 6 with wheel).
 
@@ -94,7 +103,7 @@ def pip_install_target(
     if wheel is not None:
         argv.append(str(wheel))
 
-    proc = _run_uv(argv, cwd=project_root)
+    proc = _run_uv(argv, cwd=project_root, verbosity=verbosity)
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         raise StagingError(f"uv pip install failed: {stderr}")
@@ -105,6 +114,7 @@ def build_wheel(
     out_dir: Path,
     *,
     all_packages: bool = False,
+    verbosity: int = 0,
 ) -> None:
     """Run ``uv build --wheel`` (step 5).
 
@@ -117,7 +127,7 @@ def build_wheel(
         argv.append("--all-packages")
     argv += ["--wheel", "--out-dir", str(out_dir)]
 
-    proc = _run_uv(argv, cwd=project_root)
+    proc = _run_uv(argv, cwd=project_root, verbosity=verbosity)
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         raise WheelArtifactError(f"uv build failed: {stderr}")
@@ -126,7 +136,13 @@ def build_wheel(
 # ---------- internal subprocess wrapper ----------
 
 
-def _run_uv(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
+def _run_uv(
+    argv: list[str], *, cwd: Path, verbosity: int = 0
+) -> subprocess.CompletedProcess:
+    if verbosity >= 1:
+        # POSIX-shlex format on every platform per spec 01 §8. shlex.join is
+        # POSIX-style; the leading "uv" is preserved verbatim.
+        _progress.emit_aside(f"+ {shlex.join(argv)}")
     try:
         return subprocess.run(
             argv,

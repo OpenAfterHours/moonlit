@@ -325,3 +325,40 @@ def test_resolver_is_the_only_subprocess_caller(fake_run: _FakeRun, tmp_path: Pa
     resolver.pip_install_target(tmp_path, tmp_path / "s", requirement=tmp_path / "r.txt")
     resolver.build_wheel(tmp_path, tmp_path / "d")
     assert len(fake_run.calls) == 3
+
+
+# ---------- --verbose: spec 01 §8 `+ uv <argv>` echo ----------
+
+
+def test_verbose_echoes_uv_argv_in_posix_shlex(
+    fake_run: _FakeRun, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """spec 01 §8: --verbose echoes `+ uv <argv>` on stderr per uv invocation."""
+    resolver.export(tmp_path, tmp_path / "r.txt", verbosity=1)
+    err = capsys.readouterr().err
+    assert err.startswith("+ uv export "), err
+    # Path is shlex-joined — on POSIX/Windows it appears verbatim when no
+    # special chars; the key invariant is that the line begins with `+ uv `.
+
+
+def test_default_verbosity_does_not_echo(
+    fake_run: _FakeRun, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    resolver.export(tmp_path, tmp_path / "r.txt")  # default verbosity == 0
+    err = capsys.readouterr().err
+    assert "+ uv" not in err
+
+
+def test_verbose_echo_for_each_resolver_call(
+    fake_run: _FakeRun, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    resolver.export(tmp_path, tmp_path / "r.txt", verbosity=1)
+    resolver.pip_install_target(
+        tmp_path, tmp_path / "s", requirement=tmp_path / "r.txt", verbosity=1
+    )
+    resolver.build_wheel(tmp_path, tmp_path / "d", verbosity=1)
+    err_lines = [line for line in capsys.readouterr().err.splitlines() if line]
+    assert len(err_lines) == 3
+    assert err_lines[0].startswith("+ uv export ")
+    assert err_lines[1].startswith("+ uv pip install ")
+    assert err_lines[2].startswith("+ uv build ")

@@ -112,7 +112,13 @@ def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "wheel_install_files": {},
     }
 
-    def fake_export(project_root: Path, output_file: Path, *, package: str | None = None) -> None:
+    def fake_export(
+        project_root: Path,
+        output_file: Path,
+        *,
+        package: str | None = None,
+        **_kwargs: object,
+    ) -> None:
         state["calls"].append(("export", project_root, output_file, package))
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text("# fake reqs\n", encoding="utf-8")
@@ -123,6 +129,7 @@ def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         *,
         requirement: Path | None = None,
         wheel: Path | None = None,
+        **_kwargs: object,
     ) -> None:
         state["calls"].append(("pip_install", project_root, target_dir, requirement, wheel))
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -142,7 +149,13 @@ def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
                 data = content if isinstance(content, bytes) else content.encode("utf-8")
                 dest.write_bytes(data)
 
-    def fake_build_wheel(project_root: Path, out_dir: Path, *, all_packages: bool = False) -> None:
+    def fake_build_wheel(
+        project_root: Path,
+        out_dir: Path,
+        *,
+        all_packages: bool = False,
+        **_kwargs: object,
+    ) -> None:
         state["calls"].append(("build_wheel", project_root, out_dir, all_packages))
         out_dir.mkdir(parents=True, exist_ok=True)
         for filename, name, version, console_scripts in state["wheels_to_make"]:

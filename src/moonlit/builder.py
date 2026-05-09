@@ -17,6 +17,7 @@ import re
 import shutil
 import stat
 import tempfile
+import time
 import tomllib
 import zipfile
 from collections.abc import Iterator
@@ -27,6 +28,7 @@ from pathlib import Path
 
 from . import __version__ as _MOONLIT_VERSION
 from . import hashing, resolver, workspace
+from ._progress import Step, _format_duration
 from .errors import (
     BadEntryPointError,
     ConsoleScriptNotFoundError,
@@ -73,6 +75,9 @@ def build(config: BuildConfig) -> int:
     translate to a process exit code.
     """
     _validate_config(config)
+    # Workspace detection and target selection happen before any progress
+    # steps so the spinner doesn't briefly appear before a hard preflight
+    # error like NotAWorkspaceError or UnknownPackageError.
     workspace_obj = workspace.detect(config.project_root)
     target = _select_target(workspace_obj, config)
     if config.entry_point is not None:
@@ -175,25 +180,93 @@ def _run_pipeline(
 
     is_workspace = workspace_obj is not None
     package_for_export = target.name if is_workspace else None
+    verbosity = config.verbosity
+    total_start = time.perf_counter()
 
-    resolver.export(config.project_root, req_path, package=package_for_export)
-    resolver.pip_install_target(config.project_root, site_packages, requirement=req_path)
-    resolver.build_wheel(config.project_root, dist_dir, all_packages=is_workspace)
-    wheels = sorted(dist_dir.glob("*.whl"))
-    _validate_wheels(wheels, target, is_workspace)
-    for wheel in wheels:
-        resolver.pip_install_target(config.project_root, site_packages, wheel=wheel)
+    # Step labels and result text follow the per-step plan in
+    # plans/when-the-pyz-is-hashed-salamander.md and the spec 01 §8 default-mode
+    # progress-line requirement.
 
-    entry_point = _resolve_entry_point(config, site_packages)
-    build_id = hashing.compute_build_id(site_packages)
+    with Step(f"resolving target package '{target.name}'", verbosity=verbosity) as step:
+        if is_workspace:
+            assert workspace_obj is not None  # narrows for type checker
+            step.set_result(f"selected {target.name} (workspace · {len(workspace_obj.members)} members)")
+        else:
+            step.set_result(f"selected {target.name}")
+
+    with Step("freezing dependencies (uv export)", verbosity=verbosity) as step:
+        resolver.export(
+            config.project_root, req_path, package=package_for_export, verbosity=verbosity
+        )
+        n_reqs = _count_requirements(req_path)
+        step.set_result(f"frozen · {n_reqs} packages")
+
+    with Step("installing dependencies into staging", verbosity=verbosity) as step:
+        resolver.pip_install_target(
+            config.project_root, site_packages, requirement=req_path, verbosity=verbosity
+        )
+        step.set_result(f"installed · {n_reqs} packages")
+
+    with Step("building wheels (uv build)", verbosity=verbosity) as step:
+        resolver.build_wheel(
+            config.project_root, dist_dir, all_packages=is_workspace, verbosity=verbosity
+        )
+        wheels = sorted(dist_dir.glob("*.whl"))
+        _validate_wheels(wheels, target, is_workspace)
+        step.set_result(f"built · {len(wheels)} wheel{'s' if len(wheels) != 1 else ''}")
+
+    with Step("installing wheels into staging", verbosity=verbosity) as step:
+        for wheel in wheels:
+            resolver.pip_install_target(
+                config.project_root, site_packages, wheel=wheel, verbosity=verbosity
+            )
+        step.set_result(f"installed · {len(wheels)} wheel{'s' if len(wheels) != 1 else ''}")
+
+    with Step("resolving entry point", verbosity=verbosity) as step:
+        entry_point = _resolve_entry_point(config, site_packages)
+        step.set_result(f"entry · {entry_point}")
+
+    with Step("hashing staged tree", verbosity=verbosity) as step:
+        build_id = hashing.compute_build_id(site_packages)
+        n_files = _count_site_package_files(site_packages)
+        step.set_result(
+            f"build id {build_id[:4]}…{build_id[-4:]} · {n_files} files",
+            show_duration=False,
+        )
+
     env_dict = _build_env_dict(target, build_id, entry_point, config)
-    entry_count = _write_archive_atomically(config, staging, env_dict)
 
-    if os.name != "nt":
-        os.chmod(config.output_path, 0o755)
+    with Step("writing archive", verbosity=verbosity) as step:
+        entry_count = _write_archive_atomically(config, staging, env_dict)
+        if os.name != "nt":
+            os.chmod(config.output_path, 0o755)
+        total_elapsed = time.perf_counter() - total_start
+        step.set_result(
+            f"wrote {config.output_path.name} · {_format_duration(total_elapsed)} total",
+            show_duration=False,
+        )
 
     _print_success_line(config.output_path, entry_count)
     return 0
+
+
+def _count_requirements(req_path: Path) -> int:
+    """Count package lines in a uv-exported requirements file (skip blanks/comments)."""
+    if not req_path.is_file():
+        return 0
+    n = 0
+    with open(req_path, encoding="utf-8") as f:
+        for raw in f:
+            line = raw.strip()
+            if line and not line.startswith("#"):
+                n += 1
+    return n
+
+
+def _count_site_package_files(site_packages: Path) -> int:
+    if not site_packages.is_dir():
+        return 0
+    return sum(1 for p in site_packages.rglob("*") if p.is_file())
 
 
 def _validate_wheels(wheels: list[Path], target: _Target, is_workspace: bool) -> None:

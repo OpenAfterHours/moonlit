@@ -57,7 +57,13 @@ def _fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         ],
     }
 
-    def fake_export(project_root: Path, output_file: Path, *, package: str | None = None) -> None:
+    def fake_export(
+        project_root: Path,
+        output_file: Path,
+        *,
+        package: str | None = None,
+        **_kwargs: object,
+    ) -> None:
         state["calls"].append(("export", package))
         output_file.write_text("# fake reqs\n", encoding="utf-8")
 
@@ -67,6 +73,7 @@ def _fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         *,
         requirement: Path | None = None,
         wheel: Path | None = None,
+        **_kwargs: object,
     ) -> None:
         state["calls"].append(("pip_install", requirement, wheel))
         target_dir.mkdir(parents=True, exist_ok=True)
@@ -76,7 +83,13 @@ def _fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             data = content if isinstance(content, bytes) else content.encode("utf-8")
             dest.write_bytes(data)
 
-    def fake_build_wheel(project_root: Path, out_dir: Path, *, all_packages: bool = False) -> None:
+    def fake_build_wheel(
+        project_root: Path,
+        out_dir: Path,
+        *,
+        all_packages: bool = False,
+        **_kwargs: object,
+    ) -> None:
         state["calls"].append(("build_wheel", all_packages))
         out_dir.mkdir(parents=True, exist_ok=True)
         for filename, name, version in state["wheels_to_make"]:
@@ -623,6 +636,57 @@ def test_quiet_preserves_stdout_success_line(
     )
     assert code == 0
     assert stdout.startswith("wrote ")
+
+
+# ---------- §8 progress lines on stderr ----------
+
+
+def test_quiet_emits_no_progress_on_stderr(
+    call_cli: Any, project_root: Path, output_path: Path
+) -> None:
+    """spec §8: --quiet suppresses stderr (progress + verbose echo)."""
+    code, stdout, stderr = call_cli(
+        "build", str(project_root), "-o", str(output_path), "-e", "myapp:main", "-q"
+    )
+    assert code == 0, stderr
+    assert stderr == ""
+    # Stdout success line still present (regression guard for I8).
+    assert stdout.startswith("wrote ")
+
+
+def test_default_emits_step_progress_on_stderr(
+    call_cli: Any, project_root: Path, output_path: Path
+) -> None:
+    """Default mode shows per-step labels on stderr (not a TTY in tests → plain `→`/`✓`)."""
+    code, _, stderr = call_cli(
+        "build", str(project_root), "-o", str(output_path), "-e", "myapp:main"
+    )
+    assert code == 0, stderr
+    # Pytest captured streams are not TTYs → plain mode → `→` start lines.
+    assert "→ freezing dependencies" in stderr
+    assert "→ building wheels" in stderr
+    assert "→ writing archive" in stderr
+    # Success markers for the same steps.
+    assert "✓ frozen" in stderr
+    assert "✓ built" in stderr
+
+
+def test_verbose_echoes_uv_argv_on_stderr(
+    call_cli: Any, project_root: Path, output_path: Path
+) -> None:
+    """spec §8: --verbose emits `+ uv <argv>` on stderr per uv invocation."""
+    code, _, stderr = call_cli(
+        "build", str(project_root), "-o", str(output_path), "-e", "myapp:main", "-v"
+    )
+    assert code == 0, stderr
+    # The fakes don't actually invoke uv, but the resolver wrappers still emit
+    # the `+ uv ...` echo before short-circuiting to the fake. Wait: no — the
+    # fake REPLACES resolver.export et al, so _run_uv is never called and no
+    # echo fires. So under fakes, --verbose has the same stderr as default;
+    # the echo is exercised in test_resolver.py instead.
+    # We DO still expect the step lines to appear.
+    assert "→ freezing dependencies" in stderr
+    assert "✓ frozen" in stderr
 
 
 # ---------- §3.5 / I6: MOONLIT_* env vars ignored at build time ----------
