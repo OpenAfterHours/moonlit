@@ -85,7 +85,7 @@ def test_plain_mode_no_escape_codes(stream_plain: _FakeStream) -> None:
         step.set_result("wrote app.pyz")
     out = stream_plain.getvalue()
     assert "\x1b[" not in out  # no ANSI escapes
-    assert "\r" not in out      # no carriage returns
+    assert "\r" not in out  # no carriage returns
 
 
 def test_plain_mode_default_label_when_no_result(stream_plain: _FakeStream) -> None:
@@ -104,8 +104,9 @@ def test_plain_mode_show_duration_false_omits_duration(stream_plain: _FakeStream
 
 
 def test_plain_mode_exception_emits_x_marker(stream_plain: _FakeStream) -> None:
-    with pytest.raises(RuntimeError), Step(
-        "freezing dependencies", verbosity=0, stream=stream_plain
+    with (
+        pytest.raises(RuntimeError),
+        Step("freezing dependencies", verbosity=0, stream=stream_plain),
     ):
         raise RuntimeError("uv export failed")
     lines = stream_plain.getvalue().splitlines()

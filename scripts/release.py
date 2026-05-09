@@ -57,6 +57,7 @@ BUMP_FILES = [PYPROJECT, INIT_PY, HOMEPAGE, REPO_ROOT / "uv.lock"]
 
 # ---------------------------------------------------------------- entry point
 
+
 def main() -> int:
     args = parse_args()
 
@@ -105,6 +106,7 @@ def main() -> int:
 
 # ----------------------------------------------------------- argument parsing
 
+
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
         prog="release.py",
@@ -122,6 +124,7 @@ def parse_args() -> argparse.Namespace:
 
 
 # ----------------------------------------------------------- version handling
+
 
 @dataclass(frozen=True, order=True)
 class Version:
@@ -165,6 +168,7 @@ def compute_target(current: Version, bump: str) -> Version:
 
 # ------------------------------------------------------------ pre-flight gates
 
+
 def require_clean_tree() -> None:
     out = capture("git status --porcelain")
     if out.strip():
@@ -188,6 +192,7 @@ def require_tag_unused(target: Version) -> None:
 
 # ----------------------------------------------------------------- file edits
 
+
 def bump_pyproject(target: Version) -> None:
     """Update the [project] version line, preserving formatting."""
     text = PYPROJECT.read_text(encoding="utf-8")
@@ -199,9 +204,9 @@ def bump_pyproject(target: Version) -> None:
         flags=re.MULTILINE,
     )
     if n != 1:
-        die("could not find a top-level `version = \"...\"` line in pyproject.toml")
+        die('could not find a top-level `version = "..."` line in pyproject.toml')
     PYPROJECT.write_text(new_text, encoding="utf-8")
-    print(f"  pyproject.toml         -> version = \"{target}\"")
+    print(f'  pyproject.toml         -> version = "{target}"')
 
 
 def bump_init_py(target: Version) -> None:
@@ -214,9 +219,9 @@ def bump_init_py(target: Version) -> None:
         flags=re.MULTILINE,
     )
     if n != 1:
-        die("could not find `__version__ = \"...\"` in src/moonlit/__init__.py")
+        die('could not find `__version__ = "..."` in src/moonlit/__init__.py')
     INIT_PY.write_text(new_text, encoding="utf-8")
-    print(f"  src/moonlit/__init__.py -> __version__ = \"{target}\"")
+    print(f'  src/moonlit/__init__.py -> __version__ = "{target}"')
 
 
 def bump_homepage(target: Version) -> None:
@@ -241,6 +246,7 @@ def bump_homepage(target: Version) -> None:
 
 
 # -------------------------------------------------------------------- git ops
+
 
 def show_diff_stat() -> None:
     paths = " ".join(str(p.relative_to(REPO_ROOT).as_posix()) for p in BUMP_FILES)
@@ -271,6 +277,7 @@ def tag_release(target: Version) -> None:
 
 # --------------------------------------------------------------- next-steps blurb
 
+
 def print_next_steps(target: Version) -> None:
     tag = f"v{target}"
     print("=== next steps (run when you're ready) ===")
@@ -290,6 +297,7 @@ def print_next_steps(target: Version) -> None:
 
 
 # ------------------------------------------------------------------ subprocess
+
 
 def run(cmd: str, *, description: str | None, echo: bool = True) -> None:
     """Run a shell command; abort on non-zero exit."""

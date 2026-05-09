@@ -190,7 +190,9 @@ def _run_pipeline(
     with Step(f"resolving target package '{target.name}'", verbosity=verbosity) as step:
         if is_workspace:
             assert workspace_obj is not None  # narrows for type checker
-            step.set_result(f"selected {target.name} (workspace · {len(workspace_obj.members)} members)")
+            step.set_result(
+                f"selected {target.name} (workspace · {len(workspace_obj.members)} members)"
+            )
         else:
             step.set_result(f"selected {target.name}")
 

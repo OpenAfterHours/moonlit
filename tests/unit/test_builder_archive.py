@@ -69,9 +69,7 @@ def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         ],
     }
 
-    def fake_export(
-        project_root: Path, output_file: Path, *, package=None, **_kwargs
-    ) -> None:
+    def fake_export(project_root: Path, output_file: Path, *, package=None, **_kwargs) -> None:
         state["calls"].append(("export", project_root, output_file, package))
         output_file.write_text("# fake reqs\n", encoding="utf-8")
 

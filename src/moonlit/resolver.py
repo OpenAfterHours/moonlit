@@ -136,9 +136,7 @@ def build_wheel(
 # ---------- internal subprocess wrapper ----------
 
 
-def _run_uv(
-    argv: list[str], *, cwd: Path, verbosity: int = 0
-) -> subprocess.CompletedProcess:
+def _run_uv(argv: list[str], *, cwd: Path, verbosity: int = 0) -> subprocess.CompletedProcess:
     if verbosity >= 1:
         # POSIX-shlex format on every platform per spec 01 §8. shlex.join is
         # POSIX-style; the leading "uv" is preserved verbatim.
