@@ -119,6 +119,13 @@ def cli(ctx: click.Context) -> None:
     help="Opt in to dev-group dependencies (mutually exclusive with --no-dev).",
 )
 @click.option(
+    "--windows-exe",
+    "windows_exe",
+    is_flag=True,
+    default=False,
+    help="Produce a native Windows .exe (launcher + zipapp) instead of a .pyz.",
+)
+@click.option(
     "--force",
     "force",
     is_flag=True,
@@ -127,7 +134,9 @@ def cli(ctx: click.Context) -> None:
 )
 @click.option("-q", "--quiet", "quiet", is_flag=True, default=False)
 @click.option("-v", "--verbose", "verbose", is_flag=True, default=False)
+@click.pass_context
 def build_cmd(
+    ctx: click.Context,
     project: str,
     entry_point: str | None,
     console_script: str | None,
@@ -136,6 +145,7 @@ def build_cmd(
     package: str | None,
     no_dev_flag: bool,
     dev_flag: bool,
+    windows_exe: bool,
     force: bool,
     quiet: bool,
     verbose: bool,
@@ -148,6 +158,12 @@ def build_cmd(
         raise click.UsageError("--quiet and --verbose are mutually exclusive")
     if no_dev_flag and dev_flag:
         raise click.UsageError("--no-dev and --dev are mutually exclusive")
+    if windows_exe and not output_file.lower().endswith(".exe"):
+        # spec §3 rule 5 / D19b: --windows-exe demands an .exe output suffix.
+        raise click.UsageError("--windows-exe requires --output-file to end in .exe")
+    if windows_exe and ctx.get_parameter_source("python_shebang") == click.core.ParameterSource.DEFAULT:
+        # D19c: pivot the default shebang to one Windows can resolve.
+        python_shebang = "python.exe"
     _validate_shebang(python_shebang)
 
     # spec §4 step 2: PROJECT resolves to existing directory.
@@ -182,6 +198,7 @@ def build_cmd(
         package=package,
         force=force,
         verbosity=verbosity,
+        windows_exe=windows_exe,
     )
     sys.exit(run_build(config))
 

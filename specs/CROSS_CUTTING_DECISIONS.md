@@ -224,6 +224,43 @@ CLI top-level installs a SIGINT handler that:
 
 The bootstrap (runtime) does NOT handle SIGINT specially — Python's default applies. The bootstrap's tempdir for extraction is per-pid and is cleaned in `finally` of the extraction function, but if SIGKILL fires, it leaks (documented in D4).
 
+## D19. Output-format dispatch (`--windows-exe`)
+
+The build pipeline produces exactly one of two output shapes; the active mode is selected by the `--windows-exe` CLI flag.
+
+**Default mode (`.pyz`):**
+```
+<b"#!"><python_shebang><b"\n"><zip body>
+```
+This is the historical behavior, untouched by D19.
+
+**Windows-exe mode:**
+```
+<launcher PE bytes><b"#!"><python_shebang><b"\n"><zip body>
+```
+Where `<launcher PE bytes>` is `src/moonlit/_launchers/t-<arch>.exe` selected by host architecture (D19a). The remainder — shebang line and zip body — is byte-identical to what the same build would emit in default mode. This is enforced by tests (specs/01-cli.md I11 falsifier: hash the trailing zip).
+
+**D19a — Architecture selection.** At build time, the host architecture is normalized:
+
+| `os.name` | `platform.machine()` value | normalized arch |
+|-----------|---------------------------|-----------------|
+| `nt`      | `AMD64`                   | `x64`           |
+| `nt`      | `ARM64`                   | `arm64`         |
+| `nt`      | `x86`                     | `x86`           |
+| (any)     | `x86_64`                  | `x64`           |
+| (any)     | `aarch64`                 | `arm64`         |
+| (any)     | `i686` / `i386`           | `x86`           |
+
+If no entry matches, the build raises `InternalError` (exit 11) with a message naming the observed `(os.name, platform.machine())` pair. If the matching `t-<arch>.exe` is missing from the package data (e.g. the wheel was stripped), the build raises `InternalError` and instructs the user to reinstall.
+
+**D19b — Suffix policy.** When `--windows-exe` is set, `--output-file` MUST end in `.exe` (case-insensitive on Windows file systems, but compared with `str.endswith(".exe")` for portability). Mismatch is a CLI usage error → exit 2.
+
+**D19c — Default shebang.** When `--windows-exe` is set and `--python` was left at its default value (i.e. the user did not pass `-p`), the shebang baked into the launcher payload is `python.exe` rather than the cross-platform default `/usr/bin/env python3`. Detected via Click's `ParameterSource.DEFAULT`.
+
+**D19d — POSIX exec-bit.** Windows-exe mode skips the post-write `os.chmod(output_path, 0o755)` regardless of host OS — a `.exe` does not need POSIX exec bits and the chmod is a no-op on the typical target file system anyway.
+
+The bootstrap, env.json, cache layout, and zip body are unaffected by D19. The launcher cedes control to Python with the .exe path as `argv[1]`, and Python's zipapp/zipimport machinery reads the trailing zip exactly as it would for a `.pyz`.
+
 ---
 
 These decisions are the binding contract for v2. Authors who deviate must explicitly justify why; otherwise apply them mechanically.

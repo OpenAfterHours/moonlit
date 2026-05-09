@@ -95,6 +95,7 @@ If you find yourself jumping up the file to understand a downstream function, th
 - **Cache root on Windows is `%LOCALAPPDATA%\moonlit`**, not `~/.moonlit`. Roaming profiles must not bloat.
 - **`os.replace()` for atomic rename** — works on both POSIX and Windows since Python 3.3. Don't use `os.rename()` (Windows fails if the target exists).
 - **Locking is OS-managed**: `fcntl.flock(LOCK_EX | LOCK_NB)` on POSIX, `msvcrt.locking(LK_NBLCK, 1)` on Windows, both dispatched from `_bootstrap/locking.py`. The lock file at `<cache_root>/<cache_key>.lock` is opened with `O_CREAT | O_RDWR` (no `O_EXCL`) and persists across releases — closing the fd releases the OS lock; the kernel releases it on process death. Do NOT add `os.unlink(lock_path)` to the release path: it would race a concurrent opener since `flock` is per open file description.
+- **Launcher binaries** under `src/moonlit/_launchers/t-{x86,x64,arm64}.exe` are vendored build artifacts of the `launcher/` Rust crate. Treat them as opaque bytes from Python — never modify in place. To regenerate, edit `launcher/src/main.rs`, `cargo build --release --target <triple>`, and copy the produced `t.exe` over the appropriate `t-<arch>.exe`. See `launcher/README.md` for the full recipe.
 
 ## Environment variables (runtime, read by bootstrap)
 
@@ -159,7 +160,6 @@ The following are intentionally deferred from the MVP. If a task touches one of 
 - `--preamble` script
 - `--extend-pythonpath` for subprocesses
 - `--site-packages` extra-dirs flag
-- `--windows-exe` launcher (distlib-style native .exe wrapping)
 - Cross-interpreter builds (`--python-version` / `--platform` pass-through to uv)
 
 ## Platform note

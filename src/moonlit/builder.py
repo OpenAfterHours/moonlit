@@ -13,6 +13,7 @@ import configparser
 import importlib.resources
 import json
 import os
+import platform
 import re
 import shutil
 import stat
@@ -55,6 +56,9 @@ class BuildConfig:
     package: str | None
     force: bool
     verbosity: int
+    # D19: when True, prepend a native Windows launcher to the zip body so the
+    # produced file runs as a `.exe` without an explicit Python prefix.
+    windows_exe: bool = False
 
 
 @dataclass(frozen=True)
@@ -240,7 +244,10 @@ def _run_pipeline(
 
     with Step("writing archive", verbosity=verbosity) as step:
         entry_count = _write_archive_atomically(config, staging, env_dict)
-        if os.name != "nt":
+        # D19d: skip the POSIX exec-bit chmod for windows_exe mode — a `.exe`
+        # doesn't need it, and the file is normally written to a Windows-style
+        # filesystem anyway.
+        if os.name != "nt" and not config.windows_exe:
             os.chmod(config.output_path, 0o755)
         total_elapsed = time.perf_counter() - total_start
         step.set_result(
@@ -356,7 +363,7 @@ def _write_archive_atomically(config: BuildConfig, staging: Path, env_dict: dict
     output_path = config.output_path.resolve(strict=False)
     tmp_out = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
     try:
-        entry_count = _create_archive(tmp_out, staging, env_dict, config.python_shebang)
+        entry_count = _create_archive(tmp_out, staging, env_dict, config)
         os.replace(tmp_out, output_path)
         return entry_count
     finally:
@@ -368,12 +375,13 @@ def _write_archive_atomically(config: BuildConfig, staging: Path, env_dict: dict
                 pass
 
 
-def _create_archive(tmp_out: Path, staging: Path, env_dict: dict, python_shebang: str) -> int:
-    """Write the .pyz archive per spec 02 §3 step 9. Returns total zip-entry count.
+def _create_archive(tmp_out: Path, staging: Path, env_dict: dict, config: BuildConfig) -> int:
+    """Write the archive per spec 02 §3 step 9. Returns total zip-entry count.
 
-    Layout: shebang prefix BEFORE the zip header, then a ZIP_DEFLATED archive
-    containing ``site-packages/<files>`` (D1), the ``_bootstrap/`` package
-    copied verbatim, the rendered ``__main__.py``, and ``env.json``.
+    Output shape dispatches on ``config.windows_exe`` (D19): default mode
+    writes ``<shebang line><zip body>``; windows-exe mode writes
+    ``<launcher PE bytes><shebang line><zip body>``. The trailing zip body is
+    byte-identical between modes (invariant I11).
     """
     site_packages = staging / "site-packages"
     env_payload = _serialize_env_json(env_dict)
@@ -382,8 +390,10 @@ def _create_archive(tmp_out: Path, staging: Path, env_dict: dict, python_shebang
 
     entry_count = 0
     with open(tmp_out, "wb") as fp:
-        # Step 9.3: shebang BEFORE the zip header (D1).
-        fp.write(b"#!" + python_shebang.encode("ascii") + b"\n")
+        # Step 9.3: prefix bytes BEFORE the zip header.
+        if config.windows_exe:
+            fp.write(_load_launcher_bytes())
+        fp.write(b"#!" + config.python_shebang.encode("ascii") + b"\n")
         with zipfile.ZipFile(fp, "w", zipfile.ZIP_DEFLATED) as zf:
             # Step 9.5: site-packages tree.
             for src_file, arcname, mode in _iter_staging_files(site_packages):
@@ -469,6 +479,51 @@ def _walk_traversable(node: Traversable, *, rel_prefix: str) -> Iterator[tuple[s
             yield rel, child.read_bytes()
         else:
             yield from _walk_traversable(child, rel_prefix=rel)
+
+
+def _load_launcher_bytes() -> bytes:
+    """Read the vendored Windows launcher for the host architecture (D19a).
+
+    Raises :class:`InternalError` if the host platform doesn't map to a known
+    launcher arch or the expected ``t-<arch>.exe`` is missing from the
+    package data.
+    """
+    arch = _detect_launcher_arch()
+    res = importlib.resources.files("moonlit._launchers") / f"t-{arch}.exe"
+    if not res.is_file():
+        raise InternalError(
+            f"missing launcher binary: moonlit/_launchers/t-{arch}.exe; "
+            f"reinstall moonlit or rebuild via launcher/ (see launcher/README.md)"
+        )
+    return res.read_bytes()
+
+
+def _detect_launcher_arch() -> str:
+    """Map ``(os.name, platform.machine())`` to a launcher arch tag.
+
+    Per D19a, returns one of ``x64``, ``x86``, or ``arm64``. Anything else
+    raises :class:`InternalError` (exit 11) — building a Windows .exe on an
+    unrecognized host is treated as a configuration bug.
+    """
+    machine = platform.machine().upper()
+    # Windows reports AMD64/ARM64; POSIX hosts cross-building report x86_64,
+    # aarch64, etc. Both shapes are mapped here.
+    arch_map = {
+        "AMD64": "x64",
+        "X86_64": "x64",
+        "ARM64": "arm64",
+        "AARCH64": "arm64",
+        "X86": "x86",
+        "I686": "x86",
+        "I386": "x86",
+    }
+    arch = arch_map.get(machine)
+    if arch is None:
+        raise InternalError(
+            f"unsupported host architecture for --windows-exe: "
+            f"os.name={os.name!r}, platform.machine()={platform.machine()!r}"
+        )
+    return arch
 
 
 def _print_success_line(output_path: Path, entry_count: int) -> None:

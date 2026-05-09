@@ -474,3 +474,152 @@ def test_zip_entries_are_sorted_for_bootstrap(
     with zipfile.ZipFile(output_path, "r") as zf:
         bootstrap_names = [n for n in zf.namelist() if n.startswith("_bootstrap/")]
     assert bootstrap_names == sorted(bootstrap_names)
+
+
+# ---------- --windows-exe (D19) ----------
+
+
+@pytest.fixture
+def exe_output_path(tmp_path: Path) -> Path:
+    out = tmp_path / "out" / "app.exe"
+    out.parent.mkdir(parents=True)
+    return out
+
+
+def _find_pe_end(buf: bytes) -> int:
+    """Mirror of launcher/src/main.rs::find_pe_end for byte-level test assertions.
+
+    Returns the offset of the first byte past the PE image; trailing data
+    (shebang line + zip body in our wrapper format) starts there.
+    """
+    assert buf[:2] == b"MZ", "not a PE file"
+    e_lfanew = int.from_bytes(buf[0x3C:0x40], "little")
+    assert buf[e_lfanew : e_lfanew + 4] == b"PE\0\0", "not a PE file"
+    file_header = buf[e_lfanew + 4 : e_lfanew + 24]
+    num_sections = int.from_bytes(file_header[2:4], "little")
+    opt_size = int.from_bytes(file_header[16:18], "little")
+    section_table_start = e_lfanew + 24 + opt_size
+    pe_end = section_table_start + 40 * num_sections
+    for i in range(num_sections):
+        sh = buf[section_table_start + i * 40 : section_table_start + (i + 1) * 40]
+        size_raw = int.from_bytes(sh[16:20], "little")
+        ptr_raw = int.from_bytes(sh[20:24], "little")
+        if ptr_raw == 0:
+            continue
+        end = ptr_raw + size_raw
+        if end > pe_end:
+            pe_end = end
+    return pe_end
+
+
+def test_windows_exe_starts_with_pe_magic(
+    project_root: Path, exe_output_path: Path, fake_resolver: dict
+) -> None:
+    config = make_config(
+        project_root, exe_output_path, windows_exe=True, python_shebang="python.exe"
+    )
+    build(config)
+    raw = exe_output_path.read_bytes()
+    assert raw[:2] == b"MZ"
+
+
+def test_windows_exe_shebang_immediately_follows_pe_image(
+    project_root: Path, exe_output_path: Path, fake_resolver: dict
+) -> None:
+    config = make_config(
+        project_root, exe_output_path, windows_exe=True, python_shebang="python.exe"
+    )
+    build(config)
+    raw = exe_output_path.read_bytes()
+    pe_end = _find_pe_end(raw)
+    assert raw[pe_end : pe_end + len(b"#!python.exe\n")] == b"#!python.exe\n"
+
+
+def test_windows_exe_zip_body_matches_pyz_per_entry(
+    project_root: Path, tmp_path: Path, fake_resolver: dict
+) -> None:
+    # Invariant I11: a .pyz and the .exe built from the same project share
+    # the same set of zip entries with the same content bytes. Byte-identical
+    # zip bodies are NOT a contract today — zipfile embeds mtimes and our
+    # builds happen at different wall-clock instants. Once `--reproducible`
+    # lands, I11 can tighten to byte-identity.
+    fake_resolver["stage_files"] = {
+        "mypkg/__init__.py": b"# mypkg\n",
+        "mypkg/cli.py": b"def main():\n    return 0\n",
+    }
+    pyz_path = tmp_path / "out" / "app.pyz"
+    exe_path = tmp_path / "out" / "app.exe"
+    pyz_path.parent.mkdir(parents=True)
+    shebang = "python.exe"
+    build(make_config(project_root, pyz_path, python_shebang=shebang))
+    build(make_config(project_root, exe_path, windows_exe=True, python_shebang=shebang))
+
+    # Both files are openable as zips; compare per-entry content.
+    with zipfile.ZipFile(pyz_path, "r") as pyz_zf, zipfile.ZipFile(exe_path, "r") as exe_zf:
+        pyz_names = sorted(pyz_zf.namelist())
+        exe_names = sorted(exe_zf.namelist())
+        assert pyz_names == exe_names
+        for name in pyz_names:
+            assert pyz_zf.read(name) == exe_zf.read(name), f"entry {name!r} differs"
+
+
+def test_windows_exe_zipfile_round_trips(
+    project_root: Path, exe_output_path: Path, fake_resolver: dict
+) -> None:
+    # Python's zipfile module reads the central directory from the END of the
+    # file, so a leading PE prefix is harmless: env.json + __main__.py + the
+    # _bootstrap/ tree must all still be enumerable.
+    config = make_config(
+        project_root, exe_output_path, windows_exe=True, python_shebang="python.exe"
+    )
+    build(config)
+    with zipfile.ZipFile(exe_output_path, "r") as zf:
+        names = zf.namelist()
+    assert "env.json" in names
+    assert "__main__.py" in names
+    assert any(n.startswith("_bootstrap/") for n in names)
+
+
+# ---------- arch detection (D19a) ----------
+
+
+@pytest.mark.parametrize(
+    "machine,expected",
+    [
+        ("AMD64", "x64"),
+        ("amd64", "x64"),
+        ("x86_64", "x64"),
+        ("ARM64", "arm64"),
+        ("aarch64", "arm64"),
+        ("x86", "x86"),
+        ("i686", "x86"),
+        ("i386", "x86"),
+    ],
+)
+def test_detect_launcher_arch_normalizes_known_values(
+    monkeypatch: pytest.MonkeyPatch, machine: str, expected: str
+) -> None:
+    monkeypatch.setattr(builder.platform, "machine", lambda: machine)
+    assert builder._detect_launcher_arch() == expected
+
+
+def test_detect_launcher_arch_rejects_unknown(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(builder.platform, "machine", lambda: "MIPS")
+    with pytest.raises(builder.InternalError, match="MIPS"):
+        builder._detect_launcher_arch()
+
+
+def test_load_launcher_bytes_returns_pe_image() -> None:
+    # Sanity: the vendored x64 launcher is shipped with the package.
+    raw = builder._load_launcher_bytes()
+    assert raw[:2] == b"MZ"
+    assert len(raw) > 1024  # not a stub
+
+
+def test_load_launcher_bytes_raises_when_arch_binary_missing(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    # Pretend we're on an arch we haven't vendored yet.
+    monkeypatch.setattr(builder.platform, "machine", lambda: "ARM64")
+    with pytest.raises(builder.InternalError, match="missing launcher binary"):
+        builder._load_launcher_bytes()

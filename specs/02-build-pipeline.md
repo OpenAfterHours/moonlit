@@ -58,10 +58,10 @@ No `--reinstall-package`; no `--reinstall`. Each non-zero exit → `StagingError
 
 **Step 8 — Build ID.** `compute_build_id(<staging>/site-packages)` (Section 4). Files outside `<staging>/site-packages/` (e.g. `<staging>/bin/` console-script wrappers) are not bundled in MVP and not hashed.
 
-**Step 9 — Archive assembly** (`builder.create_archive`).
+**Step 9 — Archive assembly** (`builder.create_archive`). Output shape dispatches on `BuildConfig.windows_exe` per D19; the zip body (steps 9.5-9.8 below) is byte-identical between modes.
 1. Pre-flight on `output_path`: parent directory must exist and be writable, else `OutputNotWritableError` (7); if path exists and is a directory or symlink → `OutputExistsError` (7); if path exists as a regular file and `not force` → `OutputExistsError` (7).
 2. `tmp_out = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")` (D15). Open `tmp_out` for binary write.
-3. Write `b"#!" + python_shebang.encode("ascii") + b"\n"` directly to the file (before opening the zip).
+3. **Prefix.** If `windows_exe` is set, write the launcher bytes for the host architecture (D19a) followed by `b"#!" + python_shebang.encode("ascii") + b"\n"`. Otherwise, write only the shebang line. Either way, the file pointer now sits exactly where the zip body begins.
 4. Open `zipfile.ZipFile(fp, "w", zipfile.ZIP_DEFLATED)` over the same fp.
 5. Walk `<staging>/site-packages/` via `rglob("*")` filtering `is_file()`. For each file, `relpath = p.relative_to(<staging>/site-packages)` and write with `arcname = "site-packages/" + relpath.as_posix()` (D1). On POSIX, if the source file mode has `stat.S_IXUSR | S_IXGRP | S_IXOTH` set, set `ZipInfo.external_attr = (0o755 << 16)`; else default. Arcnames are guaranteed to be relative POSIX paths with no `..` segments by construction (rglob within staging) — zip-slip is impossible.
 6. Copy the `_bootstrap/` package via `importlib.resources.files("moonlit") / "_bootstrap"`, recursively writing each file as `_bootstrap/<relpath>.as_posix()`.
@@ -69,7 +69,7 @@ No `--reinstall-package`; no `--reinstall`. Each non-zero exit → `StagingError
 8. Write `env.json` at arcname `env.json` (UTF-8, no BOM).
 9. `fp.flush(); os.fsync(fp.fileno()); fp.close()`.
 
-**Step 10 — Finalize.** `os.replace(tmp_out, output_path)` (D15, atomic on POSIX and Windows). On POSIX, then `os.chmod(output_path, 0o755)`; on Windows, no-op. Tempdir from D17 is removed in the `finally` of `builder.build`. On any failure between Step 9.2 and Step 10, `finally` unlinks `tmp_out` if it exists; `output_path` is never partially written.
+**Step 10 — Finalize.** `os.replace(tmp_out, output_path)` (D15, atomic on POSIX and Windows). On POSIX, then `os.chmod(output_path, 0o755)` UNLESS `windows_exe` is set (D19d) — a `.exe` does not need POSIX exec bits. On Windows, no-op regardless. Tempdir from D17 is removed in the `finally` of `builder.build`. On any failure between Step 9.2 and Step 10, `finally` unlinks `tmp_out` if it exists; `output_path` is never partially written.
 
 ## 4. Build-id computation
 
@@ -143,7 +143,7 @@ Two concurrent `moonlit build` invocations against the same project are not supp
 
 ## 9. Cross-platform
 
-Shebang and rendered `__main__.py` use LF on all platforms. POSIX exec-bit propagation is applied per Step 9.5. On Windows the shebang is harmless metadata; the `.pyz` is run via `python app.pyz` or `py app.pyz`. A native `.exe` wrapper is deferred to v0.2 (`--windows-exe`). Cache root semantics belong to the bootstrap spec.
+Shebang and rendered `__main__.py` use LF on all platforms. POSIX exec-bit propagation is applied per Step 9.5. On Windows the shebang is harmless metadata; the `.pyz` is run via `python app.pyz` or `py app.pyz`. For drop-in `.exe` shipping, build with `--windows-exe` (D19) — the produced file prepends a small native launcher to the same zip body so it runs without an explicit `python` prefix. Cache root semantics belong to the bootstrap spec.
 
 ## 10. Edge cases (with test IDs)
 

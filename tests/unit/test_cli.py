@@ -971,3 +971,104 @@ def test_info_json_validates_before_emitting(call_cli: Any, tmp_path: Path) -> N
     assert code == 12
     assert stdout == ""
     assert "BadArchiveError:" in stderr
+
+
+# ---------- --windows-exe flag (D19) ----------
+
+
+def test_windows_exe_with_pyz_suffix_exit_2_invariant_i12(
+    call_cli: Any, project_root: Path, tmp_path: Path
+) -> None:
+    # spec invariant I12 / D19b: --windows-exe demands an .exe suffix.
+    out = tmp_path / "out" / "app.pyz"
+    out.parent.mkdir()
+    code, _, stderr = call_cli(
+        "build",
+        str(project_root),
+        "--windows-exe",
+        "-e",
+        "myapp:main",
+        "-o",
+        str(out),
+    )
+    assert code == 2
+    assert "error:" in stderr
+    assert ".exe" in stderr
+
+
+def test_windows_exe_accepts_uppercase_exe_suffix(
+    call_cli: Any, project_root: Path, tmp_path: Path
+) -> None:
+    # D19b: .lower().endswith(".exe") so App.EXE is accepted.
+    out = tmp_path / "out" / "App.EXE"
+    out.parent.mkdir()
+    code, _, _ = call_cli(
+        "build",
+        str(project_root),
+        "--windows-exe",
+        "-e",
+        "myapp:main",
+        "-o",
+        str(out),
+    )
+    assert code == 0
+    assert out.read_bytes()[:2] == b"MZ"
+
+
+def test_windows_exe_default_shebang_pivots_to_python_exe(
+    monkeypatch: pytest.MonkeyPatch,
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    # D19c: when --windows-exe is set and -p is left at default, the shebang
+    # baked into the launcher payload is "python.exe", not the cross-platform
+    # "/usr/bin/env python3".
+    out = tmp_path / "out" / "app.exe"
+    out.parent.mkdir()
+    monkeypatch.setattr(sys, "argv", [
+        "moonlit", "build", str(project_root), "--windows-exe",
+        "-e", "myapp:main", "-o", str(out),
+    ])
+    captured: dict[str, Any] = {}
+    real_build = cli_module.run_build
+
+    def capture_and_run(config: Any) -> int:
+        captured["python_shebang"] = config.python_shebang
+        captured["windows_exe"] = config.windows_exe
+        return real_build(config)
+
+    monkeypatch.setattr(cli_module, "run_build", capture_and_run)
+    try:
+        cli_module.main()
+    except SystemExit as exc:
+        assert exc.code in (0, None)
+    assert captured["windows_exe"] is True
+    assert captured["python_shebang"] == "python.exe"
+
+
+def test_windows_exe_explicit_python_flag_passthrough(
+    monkeypatch: pytest.MonkeyPatch,
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    # D19c: when -p is explicitly provided, --windows-exe does NOT override it.
+    out = tmp_path / "out" / "app.exe"
+    out.parent.mkdir()
+    monkeypatch.setattr(sys, "argv", [
+        "moonlit", "build", str(project_root), "--windows-exe",
+        "-p", "C:\\custom\\python.exe",
+        "-e", "myapp:main", "-o", str(out),
+    ])
+    captured: dict[str, Any] = {}
+    real_build = cli_module.run_build
+
+    def capture_and_run(config: Any) -> int:
+        captured["python_shebang"] = config.python_shebang
+        return real_build(config)
+
+    monkeypatch.setattr(cli_module, "run_build", capture_and_run)
+    try:
+        cli_module.main()
+    except SystemExit as exc:
+        assert exc.code in (0, None)
+    assert captured["python_shebang"] == "C:\\custom\\python.exe"
