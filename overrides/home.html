@@ -1,0 +1,203 @@
+{#-
+  moonlit docs homepage — standalone landing page (does not extend base.html).
+  The rest of the docs use the default zensical chrome; this page is a
+  full-bleed marketing landing converted from the OpenAfterHours design
+  handoff (Variation A "Night Sky").
+-#}
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>{{ config.site_name }} — uv-native Python zipapp builder</title>
+  {% if config.site_description %}
+    <meta name="description" content="{{ config.site_description }}">
+  {% endif %}
+  {% if config.site_author %}
+    <meta name="author" content="{{ config.site_author }}">
+  {% endif %}
+  {% set favicon = config.theme.favicon | d("assets/images/favicon.png") %}
+  <link rel="icon" href="{{ favicon | url }}">
+
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="stylesheet" href="{{ 'assets/stylesheets/colors_and_type.css' | url }}" />
+  <link rel="stylesheet" href="{{ 'assets/stylesheets/moonlit-landing.css' | url }}" />
+  <style>
+    html, body { background: #0d0e11; min-height: 100%; }
+    body { font-family: var(--font-sans); margin: 0; }
+    /* Full-bleed landing — no canvas chrome */
+    .ml-board { min-height: 100vh; height: auto; overflow: visible; }
+    .ml-hero { min-height: 78vh; }
+  </style>
+</head>
+<body data-md-color-scheme="slate" data-md-color-primary="orange" data-md-color-accent="orange">
+  <div class="ml-board ml-hero-a">
+
+    {#- Top nav -#}
+    <div class="ml-nav">
+      <a class="ml-brand" href="{{ '.' | url }}" style="text-decoration:none;color:inherit;">
+        <span class="ml-brand-mark">
+          <svg width="20" height="20" viewBox="0 0 20 20" aria-hidden="true">
+            <defs>
+              <mask id="brand-moon-mask">
+                <rect width="20" height="20" fill="black" />
+                <circle cx="10" cy="10" r="9" fill="white" />
+                <circle cx="17.22" cy="10" r="9" fill="black" />
+              </mask>
+            </defs>
+            <circle cx="10" cy="10" r="9" fill="rgba(255,255,255,0.05)" />
+            <circle cx="10" cy="10" r="9" fill="var(--oah-orange)" mask="url(#brand-moon-mask)" />
+          </svg>
+        </span>
+        <span>
+          <span class="ml-brand-name">moonlit</span>
+          <span class="ml-brand-org" style="display:block;">OpenAfterHours · v0.1.0</span>
+        </span>
+      </a>
+      <div class="ml-nav-links">
+        <a href="{{ 'getting-started/' | url }}">Getting started</a>
+        <a href="{{ 'cli-reference/' | url }}">CLI</a>
+        <a href="{{ 'runtime/' | url }}">Runtime</a>
+        <a class="ml-nav-cta" href="https://github.com/luckyphil122/moonlit">
+          <span>★ GitHub</span>
+        </a>
+      </div>
+    </div>
+
+    {#- Hero -#}
+    <div class="ml-hero">
+      {#- Stars and glyph backgrounds (decorative) -#}
+      <div class="ml-stars" aria-hidden="true" data-count="130" data-seed="2"></div>
+      <div class="ml-glyph-bg" aria-hidden="true">
+        <span style="top:8%;  left:4%;  font-size:13px; transform:rotate(-2deg);">#!/usr/bin/env python3</span>
+        <span style="top:18%; left:72%; font-size:12px; transform:rotate(1.5deg);">PEP 441</span>
+        <span style="top:28%; left:14%; font-size:11px; transform:rotate(-1deg);">__main__.py</span>
+        <span style="top:38%; left:54%; font-size:14px; transform:rotate(2deg);">app.pyz</span>
+        <span style="top:46%; left:6%;  font-size:10px; transform:rotate(-1.5deg);">sha256:a4f9…b32c</span>
+        <span style="top:54%; left:78%; font-size:11px; transform:rotate(1deg);">zipapp.create_archive(...)</span>
+        <span style="top:62%; left:24%; font-size:13px; transform:rotate(-0.5deg);">[tool.uv.workspace]</span>
+        <span style="top:70%; left:60%; font-size:10px; transform:rotate(2.5deg);">— python_requires &gt;=3.13</span>
+        <span style="top:78%; left:12%; font-size:12px; transform:rotate(-2deg);">entry: myapp.cli:main</span>
+        <span style="top:84%; left:46%; font-size:11px; transform:rotate(1.5deg);">ZIP local file header</span>
+        <span style="top:90%; left:76%; font-size:10px; transform:rotate(-1deg);">compress=DEFLATE</span>
+        <span style="top:12%; left:40%; font-size:10px; transform:rotate(0.5deg);">uv.lock</span>
+        <span style="top:66%; left:4%;  font-size:10px; transform:rotate(-2deg);">pyproject.toml</span>
+        <span style="top:32%; left:88%; font-size:10px; transform:rotate(2deg);">0x504b0304</span>
+      </div>
+
+      <div class="ml-hero-fg">
+        <div class="ml-hero-grid">
+          <div>
+            <div class="ml-status">
+              <span class="ml-status-dot"></span>
+              <span>PRE-RELEASE · NOT PRODUCTION READY</span>
+            </div>
+            <div class="ml-eyebrow">A uv-NATIVE BUNDLER</div>
+            <h1 class="ml-h1">
+              Pack a Python<br />
+              project into <span class="ml-accent">one file</span>,<br />
+              after hours.
+            </h1>
+            <p class="ml-lede">
+              <strong>moonlit</strong> is a CLI that bundles a uv-managed project — or an entire <code>uv workspace</code> — into a single self-contained zipapp per <strong>PEP 441</strong>. No installer. No venv on the host. One <code>.pyz</code> and a Python.
+            </p>
+            <div class="ml-cta-row">
+              <div class="ml-install" data-ml-install>
+                <span class="ml-prompt">$</span>
+                <span class="ml-cmd">uv tool install moonlit</span>
+                <span class="ml-copy">COPY</span>
+              </div>
+              <a class="ml-btn ml-btn-primary" href="{{ 'getting-started/' | url }}">
+                Read the docs <span class="arr">→</span>
+              </a>
+              <a class="ml-btn ml-btn-ghost" href="https://github.com/luckyphil122/moonlit">
+                View on GitHub
+              </a>
+            </div>
+          </div>
+
+          {#- Crescent moon stage (Variation A signature element) -#}
+          <div class="ml-moon-stage">
+            <div style="position:absolute;inset:0;display:grid;place-items:center;">
+              <svg width="420" height="420" viewBox="0 0 420 420" aria-hidden="true" style="display:block;">
+                <defs>
+                  <radialGradient id="moon-fill" cx="38%" cy="38%" r="70%">
+                    <stop offset="0%" stop-color="#ffd388" />
+                    <stop offset="40%" stop-color="#ffb04a" />
+                    <stop offset="100%" stop-color="#c9442a" />
+                  </radialGradient>
+                  <radialGradient id="moon-glow" cx="50%" cy="50%" r="50%">
+                    <stop offset="0%" stop-color="rgba(255,145,0,0.40)" />
+                    <stop offset="60%" stop-color="rgba(255,145,0,0.08)" />
+                    <stop offset="100%" stop-color="rgba(255,145,0,0)" />
+                  </radialGradient>
+                  <mask id="moon-mask">
+                    <rect width="420" height="420" fill="black" />
+                    <circle cx="210" cy="210" r="206" fill="white" />
+                    <circle cx="395.472" cy="200.7264" r="206" fill="black" />
+                  </mask>
+                  <filter id="moon-grain" x="0" y="0">
+                    <feTurbulence type="fractalNoise" baseFrequency="1.2" numOctaves="2" seed="3" />
+                    <feColorMatrix values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  0 0 0 0.18 0" />
+                    <feComposite in2="SourceGraphic" operator="in" />
+                  </filter>
+                </defs>
+                <circle cx="210" cy="210" r="210" fill="url(#moon-glow)" />
+                <g mask="url(#moon-mask)">
+                  <circle cx="210" cy="210" r="206" fill="url(#moon-fill)" />
+                  <circle cx="115.5" cy="130.2" r="12.6" fill="rgba(0,0,0,0.10)" />
+                  <circle cx="88.2"  cy="214.2" r="8.4"  fill="rgba(0,0,0,0.08)" />
+                  <circle cx="151.2" cy="247.8" r="6.3"  fill="rgba(0,0,0,0.10)" />
+                </g>
+                <g mask="url(#moon-mask)" filter="url(#moon-grain)" opacity="0.55">
+                  <rect width="420" height="420" fill="white" />
+                </g>
+                <g mask="url(#moon-mask)" opacity="0.5">
+                  <circle cx="210" cy="210" r="205" fill="none" stroke="#ffd388" stroke-width="1" />
+                </g>
+              </svg>
+            </div>
+            <div style="position:absolute;top:8%;left:-4%;font-family:var(--font-mono);font-size:11px;color:var(--oah-orange-soft);opacity:0.85;">↘ entry: myapp.cli:main</div>
+            <div style="position:absolute;bottom:12%;right:-2%;font-family:var(--font-mono);font-size:11px;color:var(--oah-slate-300);opacity:0.85;">~/dist/myapp.pyz · 4.81 MB</div>
+          </div>
+        </div>
+
+        {#- Feature shelf -#}
+        <div class="ml-shelf">
+          <div class="ml-feat">
+            <div class="ml-feat-key">01 / WORKSPACE-AWARE</div>
+            <h3 class="ml-feat-title">Bundles uv workspaces</h3>
+            <p class="ml-feat-desc">Walks the workspace graph from pyproject.toml, resolves every member, and packs the closure your entry point actually imports.</p>
+          </div>
+          <div class="ml-feat">
+            <div class="ml-feat-key">02 / FAST</div>
+            <h3 class="ml-feat-title">Builds in seconds</h3>
+            <p class="ml-feat-desc">Uses uv's resolver and a streaming zipfile writer. A 40-package workspace lands in under a second on a warm cache.</p>
+          </div>
+          <div class="ml-feat">
+            <div class="ml-feat-key">03 / ONE FILE OUT</div>
+            <h3 class="ml-feat-title">Single .pyz, no runtime</h3>
+            <p class="ml-feat-desc">Output is a stdlib zipapp per PEP 441. Drop it on any host with a compatible CPython — no venv, no installer.</p>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    {#- Footer -#}
+    <div class="ml-foot">
+      <div class="ml-foot-org">
+        <span class="ml-foot-pip"></span>
+        <span>OpenAfterHours · open source regulatory tools</span>
+      </div>
+      <div>
+        <a href="https://github.com/luckyphil122/moonlit">github</a>
+        <a href="{{ 'getting-started/' | url }}">docs</a>
+        <a href="https://github.com/luckyphil122/moonlit/blob/master/LICENSE">mit</a>
+      </div>
+    </div>
+  </div>
+
+  <script src="{{ 'assets/javascripts/moonlit-landing.js' | url }}"></script>
+</body>
+</html>

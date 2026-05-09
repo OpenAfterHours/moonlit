@@ -20,6 +20,7 @@ Copyright &copy; 2026 Phil Harrison
 
 [project.theme]
 language = "en"
+custom_dir = "overrides"
 features = [
     "announce.dismiss",
     "content.code.annotate",

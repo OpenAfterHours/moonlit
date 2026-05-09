@@ -1,0 +1,270 @@
+/* =============================================================
+   OpenAfterHours Design System — Colors & Type
+   -------------------------------------------------------------
+   Brand DNA: dark slate terminal night sky, warm owl-orange,
+   JetBrains Mono for code/formulas, Inter for UI, Space Grotesk
+   for display. Light mode supported via light-dark().
+
+   Source of truth:
+   - src/rwa_calc/ui/marimo/shared/theme.css (Marimo app)
+   - docs/assets/stylesheets/homepage.css (Zensical docs)
+   ============================================================= */
+
+/* ---------- Fonts ------------------------------------------- */
+@font-face { font-family: "Inter"; font-style: normal; font-weight: 100 900;
+  src: url("fonts/Inter-VariableFont_slnt,wght.woff2") format("woff2-variations"),
+       url("https://fonts.gstatic.com/s/inter/v18/UcC73FwrK3iLTeHuS_nVMrMxCp50SjIa1ZL7.woff2") format("woff2");
+  font-display: swap;
+}
+@font-face { font-family: "Space Grotesk"; font-style: normal; font-weight: 300 700;
+  src: url("https://fonts.gstatic.com/s/spacegrotesk/v16/V8mDoQDjQSkFtoMM3T6r8E7mF71Q-gOoraIAEj7oUXskPMBBSSJLm2E.woff2") format("woff2");
+  font-display: swap;
+}
+@font-face { font-family: "JetBrains Mono"; font-style: normal; font-weight: 100 800;
+  src: url("https://fonts.gstatic.com/s/jetbrainsmono/v20/tDbY2o-flEEny0FZhsfKu5WU4zr3E_BX0PnT8RD8yKxjPVmUsaaDhw.woff2") format("woff2");
+  font-display: swap;
+}
+
+/* ---------- Core tokens ------------------------------------- */
+:root {
+  /* ---- Brand ---- */
+  --oah-orange:           #ff9100;   /* Primary — owl / accent / buttons */
+  --oah-orange-bright:    #ffa724;   /* Brighter accent (hover on dark)  */
+  --oah-orange-hover:     #e68200;   /* Darker hover on light            */
+  --oah-orange-soft:      #ffb74d;   /* Softened for dark-mode links    */
+  --oah-orange-10:        rgba(255, 145, 0, 0.10);
+  --oah-orange-06:        rgba(255, 145, 0, 0.06);
+  --oah-orange-20:        rgba(255, 145, 0, 0.20);
+
+  --oah-owl-body:         #c9442a;   /* Owl terracotta body             */
+  --oah-owl-eye:          #ffc857;   /* Star / eye yellow               */
+  --oah-terminal-green:   #3dd68c;   /* $_ prompt on dark                */
+
+  /* ---- Slate night sky (dark foundation) ---- */
+  --oah-slate-900:        #0d0e11;   /* bg                               */
+  --oah-slate-850:        #11141a;   /* card elevated                    */
+  --oah-slate-800:        #161719;   /* popover                          */
+  --oah-slate-700:        #1f2430;   /* owl night-sky (logo disc)        */
+  --oah-slate-600:        #2a3142;
+  --oah-slate-500:        #3b4356;
+  --oah-slate-400:        #64748b;
+  --oah-slate-300:        #a0a4ab;
+  --oah-slate-200:        #cbd0d8;
+  --oah-slate-100:        #e2e4e8;
+  --oah-slate-050:        #f1f5f9;
+
+  /* ---- Ink (light mode foreground) ---- */
+  --oah-ink:              #1a1a2e;
+
+  /* ---- Semantic (Marimo callouts map directly) ---- */
+  --oah-success:          #2bb673;
+  --oah-success-bg:       rgba(43, 182, 115, 0.10);
+  --oah-warn:             #e0a800;
+  --oah-warn-bg:          rgba(224, 168, 0, 0.12);
+  --oah-danger:           #d64545;
+  --oah-danger-bg:        rgba(214, 69, 69, 0.10);
+  --oah-info:             #3b82f6;
+  --oah-info-bg:          rgba(59, 130, 246, 0.10);
+
+  /* ---- Surface tokens (light/dark auto) ---- */
+  --bg:                   light-dark(#ffffff, var(--oah-slate-900));
+  --bg-subtle:            light-dark(#fafbfc, #12141a);
+  --fg:                   light-dark(var(--oah-ink), var(--oah-slate-100));
+  --fg-muted:             light-dark(var(--oah-slate-400), var(--oah-slate-300));
+  --fg-faint:             light-dark(#94a3b8, #6b7280);
+
+  --card:                 light-dark(#ffffff, var(--oah-slate-850));
+  --card-fg:              light-dark(var(--oah-ink), var(--oah-slate-100));
+  --popover:              light-dark(#ffffff, var(--oah-slate-800));
+
+  --border:               light-dark(#e2e8f0, rgba(216, 222, 233, 0.12));
+  --border-strong:        light-dark(#cbd5e1, rgba(216, 222, 233, 0.22));
+  --input-border:         light-dark(#e2e8f0, rgba(216, 222, 233, 0.18));
+
+  --primary:              var(--oah-orange);
+  --primary-fg:           #ffffff;
+  --primary-hover:        light-dark(var(--oah-orange-hover), var(--oah-orange-bright));
+
+  --accent:               var(--oah-orange-10);
+  --accent-fg:            var(--oah-orange);
+
+  --action:               light-dark(#fff3e0, #3e2700);
+  --action-hover:         light-dark(#ffe0b2, #5c3a00);
+  --action-fg:            light-dark(var(--oah-orange-hover), var(--oah-orange-soft));
+
+  --link:                 light-dark(var(--oah-orange-hover), var(--oah-orange-soft));
+  --link-visited:         light-dark(#bf6900, var(--oah-orange));
+  --ring:                 light-dark(var(--oah-orange-soft), var(--oah-orange));
+
+  --muted:                light-dark(var(--oah-slate-050), rgba(216, 222, 233, 0.12));
+  --muted-fg:             light-dark(var(--oah-slate-400), var(--oah-slate-300));
+
+  /* ---- Radii ---- */
+  --radius-xs: 4px;
+  --radius-sm: 6px;
+  --radius-md: 8px;     /* buttons, inputs */
+  --radius-lg: 12px;    /* cards */
+  --radius-xl: 16px;    /* hero logo, feature tiles */
+  --radius-pill: 999px;
+
+  /* ---- Spacing scale (4px base) ---- */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 12px;
+  --space-4: 16px;
+  --space-5: 20px;
+  --space-6: 24px;
+  --space-8: 32px;
+  --space-10: 40px;
+  --space-12: 48px;
+  --space-16: 64px;
+
+  /* ---- Elevation ---- */
+  --shadow-xs: 0 1px 2px rgba(15, 23, 42, 0.06);
+  --shadow-sm: 0 2px 6px rgba(15, 23, 42, 0.08);
+  --shadow-md: 0 4px 14px rgba(15, 23, 42, 0.10);
+  --shadow-glow: 0 4px 20px rgba(255, 145, 0, 0.12);
+  --shadow-glow-strong: 0 4px 12px rgba(255, 145, 0, 0.3);
+
+  /* ---- Type families ---- */
+  --font-sans: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI",
+               Roboto, Helvetica, Arial, sans-serif;
+  --font-display: "Space Grotesk", "Inter", -apple-system, sans-serif;
+  --font-mono: "JetBrains Mono", "Roboto Mono", "Fira Code",
+               ui-monospace, SFMono-Regular, Menlo, monospace;
+
+  /* ---- Type scale ---- */
+  --fs-xs:   12px;  --lh-xs:   1.4;
+  --fs-sm:   14px;  --lh-sm:   1.5;
+  --fs-base: 16px;  --lh-base: 1.6;
+  --fs-md:   18px;  --lh-md:   1.55;
+  --fs-lg:   20px;  --lh-lg:   1.5;
+  --fs-xl:   24px;  --lh-xl:   1.4;
+  --fs-2xl:  32px;  --lh-2xl:  1.25;
+  --fs-3xl:  40px;  --lh-3xl:  1.2;
+  --fs-4xl:  56px;  --lh-4xl:  1.1;
+
+  /* ---- Motion ---- */
+  --ease-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-std: cubic-bezier(0.4, 0, 0.2, 1);
+  --dur-fast: 120ms;
+  --dur-med: 200ms;
+  --dur-slow: 320ms;
+}
+
+/* ---------- Dark-mode fallback (no light-dark support) ------ */
+:root.dark, :root[data-theme="dark"] {
+  color-scheme: dark;
+  --bg: var(--oah-slate-900);
+  --bg-subtle: #12141a;
+  --fg: var(--oah-slate-100);
+  --fg-muted: var(--oah-slate-300);
+  --fg-faint: #6b7280;
+  --card: var(--oah-slate-850);
+  --card-fg: var(--oah-slate-100);
+  --popover: var(--oah-slate-800);
+  --border: rgba(216, 222, 233, 0.12);
+  --border-strong: rgba(216, 222, 233, 0.22);
+  --input-border: rgba(216, 222, 233, 0.18);
+  --primary-hover: var(--oah-orange-bright);
+  --action: #3e2700;
+  --action-hover: #5c3a00;
+  --action-fg: var(--oah-orange-soft);
+  --link: var(--oah-orange-soft);
+  --link-visited: var(--oah-orange);
+  --ring: var(--oah-orange);
+  --muted: rgba(216, 222, 233, 0.12);
+  --muted-fg: var(--oah-slate-300);
+}
+
+/* ---------- Semantic element styling ------------------------ */
+html { font-family: var(--font-sans); color: var(--fg); background: var(--bg); }
+
+h1, .oah-h1 {
+  font-family: var(--font-display);
+  font-size: var(--fs-3xl);
+  line-height: var(--lh-3xl);
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  margin: 0 0 var(--space-4);
+}
+h2, .oah-h2 {
+  font-family: var(--font-display);
+  font-size: var(--fs-2xl);
+  line-height: var(--lh-2xl);
+  font-weight: 700;
+  letter-spacing: -0.01em;
+  margin: 0 0 var(--space-3);
+}
+h3, .oah-h3 {
+  font-family: var(--font-display);
+  font-size: var(--fs-xl);
+  line-height: var(--lh-xl);
+  font-weight: 600;
+  margin: 0 0 var(--space-3);
+}
+h4, .oah-h4 {
+  font-family: var(--font-sans);
+  font-size: var(--fs-lg);
+  font-weight: 600;
+  margin: 0 0 var(--space-2);
+}
+.oah-eyebrow {
+  font-family: var(--font-mono);
+  font-size: var(--fs-xs);
+  font-weight: 600;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--oah-orange);
+}
+p, .oah-body {
+  font-size: var(--fs-base);
+  line-height: var(--lh-base);
+  margin: 0 0 var(--space-3);
+  text-wrap: pretty;
+}
+.oah-lead {
+  font-size: var(--fs-md);
+  line-height: var(--lh-md);
+  color: var(--fg-muted);
+}
+.oah-small { font-size: var(--fs-sm); line-height: var(--lh-sm); }
+.oah-caption { font-size: var(--fs-xs); line-height: var(--lh-xs); color: var(--fg-muted); }
+
+code, kbd, samp, .oah-code {
+  font-family: var(--font-mono);
+  font-size: 0.92em;
+  background: var(--muted);
+  padding: 0.12em 0.38em;
+  border-radius: var(--radius-xs);
+}
+pre, .oah-pre {
+  font-family: var(--font-mono);
+  font-size: var(--fs-sm);
+  line-height: 1.6;
+  background: var(--bg-subtle);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  padding: var(--space-4);
+  overflow: auto;
+}
+pre code { background: transparent; padding: 0; border-radius: 0; }
+
+a { color: var(--link); text-decoration: none; transition: color var(--dur-fast) var(--ease-std); }
+a:hover { color: var(--primary-hover); text-decoration: underline; text-underline-offset: 2px; }
+a:visited { color: var(--link-visited); }
+
+::selection { background: var(--oah-orange-20); color: var(--fg); }
+
+/* ---------- Utility: formula bg (signature motif) ----------- */
+.oah-formula-bg {
+  position: absolute; inset: 0;
+  pointer-events: none; user-select: none; overflow: hidden;
+}
+.oah-formula {
+  position: absolute;
+  font-family: var(--font-mono);
+  white-space: nowrap; line-height: 1;
+  opacity: 0.06; color: var(--fg);
+}
+:root.dark .oah-formula, :root[data-theme="dark"] .oah-formula { opacity: 0.10; }
