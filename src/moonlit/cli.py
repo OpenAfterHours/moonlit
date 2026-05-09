@@ -21,7 +21,8 @@ from pathlib import Path
 import click
 
 from . import __version__
-from .builder import BuildConfig, build as run_build
+from .builder import BuildConfig
+from .builder import build as run_build
 from .errors import (
     MalformedPyprojectError,
     MoonlitError,
@@ -47,9 +48,7 @@ class _MoonlitGroup(click.Group):
     no_args_is_help=False,
     context_settings={"help_option_names": ["-h", "--help"]},
 )
-@click.version_option(
-    __version__, "-V", "--version", message="moonlit %(version)s"
-)
+@click.version_option(__version__, "-V", "--version", message="moonlit %(version)s")
 @click.pass_context
 def cli(ctx: click.Context) -> None:
     """moonlit — uv-powered Python zipapp builder."""
@@ -138,9 +137,7 @@ def build_cmd(
     """Build a self-contained .pyz from a uv-managed project."""
     # spec §3 flag interactions (all → exit 2 via UsageError).
     if (entry_point is None) == (console_script is None):
-        raise click.UsageError(
-            "exactly one of --entry-point/-e or --console-script/-c is required"
-        )
+        raise click.UsageError("exactly one of --entry-point/-e or --console-script/-c is required")
     if quiet and verbose:
         raise click.UsageError("--quiet and --verbose are mutually exclusive")
     if no_dev_flag and dev_flag:
@@ -244,8 +241,6 @@ def _validate_shebang(shebang: str) -> None:
     if not shebang.isascii():
         raise click.UsageError("--python must contain only ASCII characters")
     if any(c in shebang for c in "\n\r\x00"):
-        raise click.UsageError(
-            "--python must not contain newline, carriage-return, or NUL bytes"
-        )
+        raise click.UsageError("--python must not contain newline, carriage-return, or NUL bytes")
     if len(shebang.encode("ascii")) > 127:
         raise click.UsageError("--python encoded length exceeds 127 bytes")

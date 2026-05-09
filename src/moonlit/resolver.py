@@ -22,7 +22,6 @@ from .errors import (
     WheelArtifactError,
 )
 
-
 # ---------- public API ----------
 
 
@@ -60,13 +59,9 @@ def export(
 
     stderr = proc.stderr or ""
     if re.search(r"uv\.lock.*not found|no .*lockfile", stderr, re.IGNORECASE):
-        raise NoLockfileError(
-            f"uv.lock not found under {project_root}: {stderr.strip()}"
-        )
+        raise NoLockfileError(f"uv.lock not found under {project_root}: {stderr.strip()}")
     if re.search(r"out.of.date|frozen", stderr, re.IGNORECASE):
-        raise ExportError(
-            "uv.lock is out of date with pyproject.toml; run `uv lock` and retry."
-        )
+        raise ExportError("uv.lock is out of date with pyproject.toml; run `uv lock` and retry.")
     raise ExportError(f"uv export failed: {stderr.strip()}")
 
 
@@ -83,9 +78,7 @@ def pip_install_target(
     or neither is a programmer error and raises ``InternalError`` (exit 11).
     """
     if (requirement is None) == (wheel is None):
-        raise InternalError(
-            "pip_install_target requires exactly one of requirement= or wheel="
-        )
+        raise InternalError("pip_install_target requires exactly one of requirement= or wheel=")
 
     argv = [
         "uv",
@@ -145,6 +138,4 @@ def _run_uv(argv: list[str], *, cwd: Path) -> subprocess.CompletedProcess:
             text=True,
         )
     except FileNotFoundError as exc:
-        raise UvNotFoundError(
-            f"uv binary not found on PATH (running {argv[0]!r})"
-        ) from exc
+        raise UvNotFoundError(f"uv binary not found on PATH (running {argv[0]!r})") from exc

@@ -70,9 +70,7 @@ def _ensure_cache_root_exists(cache_root: Path) -> None:
     try:
         os.makedirs(cache_root, exist_ok=True)
     except OSError as exc:
-        raise BootstrapError(
-            f"cannot create cache root {cache_root}: {exc}"
-        ) from exc
+        raise BootstrapError(f"cannot create cache root {cache_root}: {exc}") from exc
 
 
 def _debug() -> bool:

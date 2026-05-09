@@ -4,7 +4,6 @@ import pytest
 
 from moonlit import errors
 
-
 EXPECTED_EXIT_CODES: list[tuple[type["errors.MoonlitError"], int]] = [
     (errors.UvNotFoundError, 3),
     (errors.NoLockfileError, 4),

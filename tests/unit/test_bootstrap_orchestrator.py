@@ -17,7 +17,6 @@ import pytest
 
 from moonlit._bootstrap import _resolve_cache_root, bootstrap
 
-
 # ---------- helpers / fixtures ----------
 
 
@@ -42,9 +41,7 @@ def _clean_runtime_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.fixture(autouse=True)
-def _safe_default_cache_root(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def _safe_default_cache_root(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Tests testing the default resolution will monkeypatch.delenv("MOONLIT_ROOT").
     monkeypatch.setenv("MOONLIT_ROOT", str(tmp_path / "_default_isolated_cache"))
 
@@ -83,9 +80,7 @@ def set_argv(monkeypatch: pytest.MonkeyPatch, archive: Path | str) -> None:
 # ---------- happy path ----------
 
 
-def test_returns_zero_on_successful_main(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_returns_zero_on_successful_main(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     archive = make_pyz(
         tmp_path / "app.pyz",
         valid_env_dict(),
@@ -95,9 +90,7 @@ def test_returns_zero_on_successful_main(
     assert bootstrap() == 0
 
 
-def test_returns_user_exit_code(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_returns_user_exit_code(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     archive = make_pyz(
         tmp_path / "app.pyz",
         valid_env_dict(),
@@ -214,9 +207,7 @@ def test_bootstrap_collision_returns_1(
 # ---------- spec §10: user-code exceptions propagate ----------
 
 
-def test_user_code_exception_is_not_caught(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_user_code_exception_is_not_caught(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Spec §10: user-code exceptions propagate normally; Python's default
     # excepthook handles them, not our BootstrapError catch.
     archive = make_pyz(
@@ -229,9 +220,7 @@ def test_user_code_exception_is_not_caught(
         bootstrap()
 
 
-def test_user_code_systemexit_propagates(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_user_code_systemexit_propagates(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # SystemExit is not a BootstrapError; it propagates untouched.
     archive = make_pyz(
         tmp_path / "app.pyz",
@@ -415,13 +404,8 @@ def test_moonlit_force_extract_re_extracts_through_bootstrap(
 
     cache_root = Path(os.environ["MOONLIT_ROOT"])
     site_dir = cache_root / f"myapp_{'a' * 64}" / "site-packages"
-    (site_dir / "myapp.py").write_text(
-        "def main():\n    return 11\n", encoding="utf-8"
-    )
+    (site_dir / "myapp.py").write_text("def main():\n    return 11\n", encoding="utf-8")
 
     monkeypatch.setenv("MOONLIT_FORCE_EXTRACT", "1")
     bootstrap()
-    assert (
-        (site_dir / "myapp.py").read_text(encoding="utf-8")
-        == "def main():\n    return 0\n"
-    )
+    assert (site_dir / "myapp.py").read_text(encoding="utf-8") == "def main():\n    return 0\n"

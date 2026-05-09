@@ -7,7 +7,6 @@ import pytest
 from moonlit import errors
 from moonlit.workspace import Workspace, detect, pep503_normalize
 
-
 # ---------- helpers ----------
 
 
@@ -111,10 +110,7 @@ def test_root_excluded_via_dot(tmp_path: Path) -> None:
 def test_exclude_removes_matched_member(tmp_path: Path) -> None:
     write_root_pyproject(
         tmp_path,
-        (
-            '[tool.uv.workspace]\n'
-            'members = ["packages/*"]\nexclude = ["packages/skipme"]\n'
-        ),
+        ('[tool.uv.workspace]\nmembers = ["packages/*"]\nexclude = ["packages/skipme"]\n'),
     )
     make_member(tmp_path, "packages/keep", "keep")
     make_member(tmp_path, "packages/skipme", "skipme")
@@ -212,9 +208,7 @@ def test_members_contains_non_string_raises(tmp_path: Path) -> None:
 
 
 def test_exclude_not_a_list_raises(tmp_path: Path) -> None:
-    write_root_pyproject(
-        tmp_path, '[tool.uv.workspace]\nmembers = []\nexclude = "x"\n'
-    )
+    write_root_pyproject(tmp_path, '[tool.uv.workspace]\nmembers = []\nexclude = "x"\n')
     with pytest.raises(errors.MalformedPyprojectError):
         detect(tmp_path)
 
@@ -228,12 +222,8 @@ def test_member_outside_project_root_raises(
     project_root.mkdir()
     sibling = parent / "outsider"
     sibling.mkdir()
-    (sibling / "pyproject.toml").write_text(
-        '[project]\nname = "outsider"\n', encoding="utf-8"
-    )
-    write_root_pyproject(
-        project_root, '[tool.uv.workspace]\nmembers = ["../outsider"]\n'
-    )
+    (sibling / "pyproject.toml").write_text('[project]\nname = "outsider"\n', encoding="utf-8")
+    write_root_pyproject(project_root, '[tool.uv.workspace]\nmembers = ["../outsider"]\n')
     with pytest.raises(errors.MalformedPyprojectError):
         detect(project_root)
 
@@ -280,10 +270,11 @@ def test_member_paths_are_resolved(tmp_path: Path) -> None:
 
 
 def test_workspace_is_frozen_dataclass(tmp_path: Path) -> None:
+    # `dataclasses.FrozenInstanceError` is a subclass of AttributeError.
     write_root_pyproject(tmp_path, "[tool.uv.workspace]\nmembers = []\n")
     ws = detect(tmp_path)
     assert ws is not None
-    with pytest.raises(Exception):  # FrozenInstanceError or AttributeError
+    with pytest.raises(AttributeError):
         ws.root = Path("/elsewhere")  # type: ignore[misc]
 
 

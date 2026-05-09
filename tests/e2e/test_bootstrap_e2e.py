@@ -19,14 +19,9 @@ import sys
 import zipfile
 from pathlib import Path
 
-import pytest
-
-
 REPO_ROOT = Path(__file__).resolve().parents[2]
 BOOTSTRAP_SRC = REPO_ROOT / "src" / "moonlit" / "_bootstrap"
-TEMPLATE_SRC = (
-    REPO_ROOT / "src" / "moonlit" / "_templates" / "main_py.tmpl"
-)
+TEMPLATE_SRC = REPO_ROOT / "src" / "moonlit" / "_templates" / "main_py.tmpl"
 
 
 # ---------- pyz construction helpers ----------
@@ -98,9 +93,7 @@ def make_test_pyz(
             for rel, content in _iter_bootstrap_files():
                 zf.writestr(f"_bootstrap/{rel}", content)
             for arcname, content in user_modules.items():
-                data = (
-                    content if isinstance(content, bytes) else content.encode("utf-8")
-                )
+                data = content if isinstance(content, bytes) else content.encode("utf-8")
                 zf.writestr(f"site-packages/{arcname}", data)
     return path
 
@@ -138,9 +131,7 @@ def run_pyz(
 def test_pyz_runs_user_main_and_prints_output(tmp_path: Path) -> None:
     pyz = make_test_pyz(
         tmp_path / "app.pyz",
-        user_modules={
-            "myapp.py": "def main():\n    print('hello from myapp')\n    return 0\n"
-        },
+        user_modules={"myapp.py": "def main():\n    print('hello from myapp')\n    return 0\n"},
     )
     code, stdout, stderr = run_pyz(pyz, env=isolated_env(tmp_path))
     assert code == 0, stderr
@@ -245,9 +236,7 @@ def test_second_run_hits_cache(tmp_path: Path) -> None:
 def test_moonlit_force_extract_re_extracts(tmp_path: Path) -> None:
     pyz = make_test_pyz(
         tmp_path / "app.pyz",
-        user_modules={
-            "myapp.py": "def main():\n    print('original')\n    return 0\n"
-        },
+        user_modules={"myapp.py": "def main():\n    print('original')\n    return 0\n"},
     )
     env = isolated_env(tmp_path)
 
@@ -260,9 +249,7 @@ def test_moonlit_force_extract_re_extracts(tmp_path: Path) -> None:
     cached_files = list(cache.rglob("myapp.py"))
     assert len(cached_files) == 1, cached_files
     cached_main = cached_files[0]
-    cached_main.write_text(
-        "def main():\n    print('mutated')\n    return 99\n", encoding="utf-8"
-    )
+    cached_main.write_text("def main():\n    print('mutated')\n    return 99\n", encoding="utf-8")
 
     # 3) Without FORCE_EXTRACT: cache hit, mutated content runs.
     code, stdout, _ = run_pyz(pyz, env=env)
@@ -286,9 +273,7 @@ def test_moonlit_force_extract_zero_is_truthy(tmp_path: Path) -> None:
     env = isolated_env(tmp_path)
     run_pyz(pyz, env=env)  # populate
     cached_main = next(Path(env["MOONLIT_ROOT"]).rglob("myapp.py"))
-    cached_main.write_text(
-        "def main():\n    print('mutated')\n    return 5\n", encoding="utf-8"
-    )
+    cached_main.write_text("def main():\n    print('mutated')\n    return 5\n", encoding="utf-8")
 
     env_zero = dict(env)
     env_zero["MOONLIT_FORCE_EXTRACT"] = "0"  # non-empty → truthy
@@ -319,9 +304,7 @@ def test_moonlit_root_directs_cache(tmp_path: Path) -> None:
         user_modules={"myapp.py": "def main():\n    return 0\n"},
     )
     custom_cache = tmp_path / "very_custom"
-    env = {
-        k: v for k, v in os.environ.items() if not k.startswith("MOONLIT_")
-    }
+    env = {k: v for k, v in os.environ.items() if not k.startswith("MOONLIT_")}
     env["MOONLIT_ROOT"] = str(custom_cache)
     code, _, _ = run_pyz(pyz, env=env)
     assert code == 0

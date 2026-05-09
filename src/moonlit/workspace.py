@@ -42,19 +42,13 @@ def detect(project_root: Path) -> Workspace | None:
 
     collected: list[tuple[str, Path]] = []
     collected_paths: set[Path] = set()
-    for raw_name, directory in _iter_glob_members(
-        project_root, members_globs, excluded
-    ):
+    for raw_name, directory in _iter_glob_members(project_root, members_globs, excluded):
         collected.append((raw_name, directory))
         collected_paths.add(directory)
 
     root_resolved = project_root.resolve()
     root_name = _project_name(data)
-    if (
-        root_name
-        and root_resolved not in excluded
-        and root_resolved not in collected_paths
-    ):
+    if root_name and root_resolved not in excluded and root_resolved not in collected_paths:
         collected.append((root_name, root_resolved))
 
     _enforce_unique_normalized_names([n for n, _ in collected])
@@ -76,17 +70,13 @@ def _load_pyproject(path: Path) -> dict:
     except FileNotFoundError as exc:
         raise MalformedPyprojectError(f"pyproject.toml not found: {path}") from exc
     except (UnicodeDecodeError, tomllib.TOMLDecodeError) as exc:
-        raise MalformedPyprojectError(
-            f"pyproject.toml could not be parsed: {path}: {exc}"
-        ) from exc
+        raise MalformedPyprojectError(f"pyproject.toml could not be parsed: {path}: {exc}") from exc
 
 
 def _read_str_list(table: dict, key: str) -> list[str]:
     raw = table.get(key, [])
     if not isinstance(raw, list):
-        raise MalformedPyprojectError(
-            f"[tool.uv.workspace].{key} must be a list of strings"
-        )
+        raise MalformedPyprojectError(f"[tool.uv.workspace].{key} must be a list of strings")
     for item in raw:
         if not isinstance(item, str):
             raise MalformedPyprojectError(
@@ -126,9 +116,7 @@ def _iter_glob_members(
             if resolved in yielded_paths:
                 continue
             if not _is_under(resolved, project_root_resolved):
-                raise MalformedPyprojectError(
-                    f"workspace member outside project root: {resolved}"
-                )
+                raise MalformedPyprojectError(f"workspace member outside project root: {resolved}")
             member_pyproject = match / "pyproject.toml"
             if not member_pyproject.exists():
                 continue
@@ -167,6 +155,4 @@ def _enforce_unique_normalized_names(names: list[str]) -> None:
     for raws in by_norm.values():
         if len(raws) > 1:
             joined = ", ".join(sorted(raws))
-            raise MalformedPyprojectError(
-                f"workspace has duplicate package names: {joined}"
-            )
+            raise MalformedPyprojectError(f"workspace has duplicate package names: {joined}")

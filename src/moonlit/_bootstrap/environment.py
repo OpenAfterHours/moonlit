@@ -14,7 +14,6 @@ from pathlib import Path
 
 from .errors import EnvJsonError
 
-
 _REQUIRED_FIELDS: tuple[str, ...] = (
     "name",
     "build_id",
@@ -33,9 +32,7 @@ _PEP508_NAME = re.compile(
 _BUILD_ID = re.compile(r"^[0-9a-f]{64}$")
 
 # entry_point each side: dotted Python identifier; no whitespace.
-_ENTRY_POINT_SIDE = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$"
-)
+_ENTRY_POINT_SIDE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 
 @dataclass(frozen=True)
@@ -129,9 +126,7 @@ def _check_required_field_types(parsed: dict) -> None:
         # bool is rejected here because every string-typed field below
         # is declared "string" in spec §2; True/False are not strings.
         if not isinstance(value, str):
-            raise EnvJsonError(
-                f"env.json: field '{field}' has wrong type (expected string)"
-            )
+            raise EnvJsonError(f"env.json: field '{field}' has wrong type (expected string)")
 
 
 def _check_field_formats(parsed: dict) -> None:
@@ -154,9 +149,7 @@ def _is_valid_entry_point(value: str) -> bool:
     if len(parts) != 2:
         return False
     lhs, rhs = parts
-    return bool(
-        _ENTRY_POINT_SIDE.fullmatch(lhs) and _ENTRY_POINT_SIDE.fullmatch(rhs)
-    )
+    return bool(_ENTRY_POINT_SIDE.fullmatch(lhs) and _ENTRY_POINT_SIDE.fullmatch(rhs))
 
 
 def _is_valid_built_at(value: str) -> bool:

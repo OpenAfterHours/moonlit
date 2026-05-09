@@ -14,7 +14,6 @@ extract dist-info into site-packages).
 
 import json
 import os
-import sys
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -36,7 +35,6 @@ from moonlit.errors import (
     WheelArtifactError,
 )
 
-
 # ---------- fixtures ----------
 
 
@@ -56,9 +54,7 @@ def make_fake_wheel(
         zf.writestr(f"{di}/WHEEL", "Wheel-Version: 1.0\n")
         zf.writestr(f"{di}/RECORD", "")
         if console_scripts:
-            ep = "[console_scripts]\n" + "".join(
-                f"{k} = {v}\n" for k, v in console_scripts.items()
-            )
+            ep = "[console_scripts]\n" + "".join(f"{k} = {v}\n" for k, v in console_scripts.items())
             zf.writestr(f"{di}/entry_points.txt", ep)
 
 
@@ -88,9 +84,7 @@ def workspace_root(tmp_path: Path) -> Path:
     for name in ("greeter", "shouter"):
         member = root / "packages" / name
         member.mkdir(parents=True)
-        write_pyproject(
-            member, f'[project]\nname = "{name}"\nversion = "0.1.0"\n'
-        )
+        write_pyproject(member, f'[project]\nname = "{name}"\nversion = "0.1.0"\n')
     return root
 
 
@@ -118,9 +112,7 @@ def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         "wheel_install_files": {},
     }
 
-    def fake_export(
-        project_root: Path, output_file: Path, *, package: str | None = None
-    ) -> None:
+    def fake_export(project_root: Path, output_file: Path, *, package: str | None = None) -> None:
         state["calls"].append(("export", project_root, output_file, package))
         output_file.parent.mkdir(parents=True, exist_ok=True)
         output_file.write_text("# fake reqs\n", encoding="utf-8")
@@ -132,9 +124,7 @@ def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         requirement: Path | None = None,
         wheel: Path | None = None,
     ) -> None:
-        state["calls"].append(
-            ("pip_install", project_root, target_dir, requirement, wheel)
-        )
+        state["calls"].append(("pip_install", project_root, target_dir, requirement, wheel))
         target_dir.mkdir(parents=True, exist_ok=True)
         # On every pip_install call, lay down generic stage_files (simulates
         # uv installing transitive deps + the target package).
@@ -146,19 +136,13 @@ def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         # On wheel install, also lay down per-wheel files.
         if wheel is not None:
             wheel_name = Path(wheel).name
-            for arcname, content in state["wheel_install_files"].get(
-                wheel_name, {}
-            ).items():
+            for arcname, content in state["wheel_install_files"].get(wheel_name, {}).items():
                 dest = target_dir / arcname
                 dest.parent.mkdir(parents=True, exist_ok=True)
-                data = content if isinstance(content, bytes) else content.encode(
-                    "utf-8"
-                )
+                data = content if isinstance(content, bytes) else content.encode("utf-8")
                 dest.write_bytes(data)
 
-    def fake_build_wheel(
-        project_root: Path, out_dir: Path, *, all_packages: bool = False
-    ) -> None:
+    def fake_build_wheel(project_root: Path, out_dir: Path, *, all_packages: bool = False) -> None:
         state["calls"].append(("build_wheel", project_root, out_dir, all_packages))
         out_dir.mkdir(parents=True, exist_ok=True)
         for filename, name, version, console_scripts in state["wheels_to_make"]:
@@ -170,9 +154,7 @@ def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             )
 
     monkeypatch.setattr(builder.resolver, "export", fake_export)
-    monkeypatch.setattr(
-        builder.resolver, "pip_install_target", fake_pip_install_target
-    )
+    monkeypatch.setattr(builder.resolver, "pip_install_target", fake_pip_install_target)
     monkeypatch.setattr(builder.resolver, "build_wheel", fake_build_wheel)
     return state
 
@@ -206,9 +188,7 @@ def make_config(
 def test_neither_entry_point_nor_console_script_raises_internal(
     project_root: Path, output_path: Path
 ) -> None:
-    config = make_config(
-        project_root, output_path, entry_point=None, console_script=None
-    )
+    config = make_config(project_root, output_path, entry_point=None, console_script=None)
     with pytest.raises(InternalError):
         build(config)
 
@@ -475,9 +455,7 @@ def test_console_script_resolves_to_entry_point(
             "myapp-0.1.0.dist-info/METADATA": "Name: myapp\nVersion: 0.1.0\n",
         }
     }
-    config = make_config(
-        project_root, output_path, entry_point=None, console_script="myapp"
-    )
+    config = make_config(project_root, output_path, entry_point=None, console_script="myapp")
     assert build(config) == 0
 
     # env.json (written by pass-1 placeholder) should record the resolved entry_point.
@@ -490,14 +468,10 @@ def test_console_script_not_found_lists_available(
 ) -> None:
     fake_resolver["wheel_install_files"] = {
         "myapp-0.1.0-py3-none-any.whl": {
-            "myapp-0.1.0.dist-info/entry_points.txt": (
-                "[console_scripts]\nfoo = m:f\nbar = m:b\n"
-            ),
+            "myapp-0.1.0.dist-info/entry_points.txt": ("[console_scripts]\nfoo = m:f\nbar = m:b\n"),
         }
     }
-    config = make_config(
-        project_root, output_path, entry_point=None, console_script="missing"
-    )
+    config = make_config(project_root, output_path, entry_point=None, console_script="missing")
     with pytest.raises(ConsoleScriptNotFoundError) as excinfo:
         build(config)
     msg = str(excinfo.value)
@@ -509,9 +483,7 @@ def test_console_script_not_found_lists_available(
 def test_console_script_not_found_when_no_console_scripts_declared(
     project_root: Path, output_path: Path, fake_resolver: dict
 ) -> None:
-    config = make_config(
-        project_root, output_path, entry_point=None, console_script="anything"
-    )
+    config = make_config(project_root, output_path, entry_point=None, console_script="anything")
     with pytest.raises(ConsoleScriptNotFoundError, match="--entry-point"):
         build(config)
 
@@ -520,16 +492,10 @@ def test_console_script_ambiguous_lists_files(
     project_root: Path, output_path: Path, fake_resolver: dict
 ) -> None:
     fake_resolver["stage_files"] = {
-        "pkg_a-0.1.0.dist-info/entry_points.txt": (
-            "[console_scripts]\nshared = a:main\n"
-        ),
-        "pkg_b-0.1.0.dist-info/entry_points.txt": (
-            "[console_scripts]\nshared = b:main\n"
-        ),
+        "pkg_a-0.1.0.dist-info/entry_points.txt": ("[console_scripts]\nshared = a:main\n"),
+        "pkg_b-0.1.0.dist-info/entry_points.txt": ("[console_scripts]\nshared = b:main\n"),
     }
-    config = make_config(
-        project_root, output_path, entry_point=None, console_script="shared"
-    )
+    config = make_config(project_root, output_path, entry_point=None, console_script="shared")
     with pytest.raises(ConsoleScriptNotFoundError, match="ambiguous"):
         build(config)
 
@@ -544,9 +510,7 @@ def test_console_script_value_validated_as_entry_point(
             ),
         }
     }
-    config = make_config(
-        project_root, output_path, entry_point=None, console_script="myapp"
-    )
+    config = make_config(project_root, output_path, entry_point=None, console_script="myapp")
     with pytest.raises(BadEntryPointError):
         build(config)
 
@@ -671,9 +635,7 @@ def test_tempdir_cleaned_on_resolver_failure(
 
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX-only chmod")
-def test_chmod_0o755_on_posix(
-    project_root: Path, output_path: Path, fake_resolver: dict
-) -> None:
+def test_chmod_0o755_on_posix(project_root: Path, output_path: Path, fake_resolver: dict) -> None:
     config = make_config(project_root, output_path, entry_point="myapp:main")
     build(config)
     mode = output_path.stat().st_mode & 0o777
@@ -690,4 +652,5 @@ def _read_env_json(pyz: Path) -> dict:
 
 def _tempdir() -> str:
     import tempfile
+
     return tempfile.gettempdir()

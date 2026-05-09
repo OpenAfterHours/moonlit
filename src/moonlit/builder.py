@@ -16,13 +16,12 @@ import os
 import re
 import shutil
 import stat
-import sys
 import tempfile
 import tomllib
 import zipfile
 from collections.abc import Iterator
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from importlib.resources.abc import Traversable
 from pathlib import Path
 
@@ -64,9 +63,7 @@ class _Target:
     directory: Path
 
 
-_ENTRY_POINT_SIDE_RE = re.compile(
-    r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$"
-)
+_ENTRY_POINT_SIDE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
 
 def build(config: BuildConfig) -> int:
@@ -94,14 +91,10 @@ def build(config: BuildConfig) -> int:
 
 def _validate_config(config: BuildConfig) -> None:
     if (config.entry_point is None) == (config.console_script is None):
-        raise InternalError(
-            "BuildConfig must have exactly one of entry_point or console_script"
-        )
+        raise InternalError("BuildConfig must have exactly one of entry_point or console_script")
 
 
-def _select_target(
-    workspace_obj: workspace.Workspace | None, config: BuildConfig
-) -> _Target:
+def _select_target(workspace_obj: workspace.Workspace | None, config: BuildConfig) -> _Target:
     if workspace_obj is None:
         if config.package is not None:
             raise NotAWorkspaceError(
@@ -138,9 +131,7 @@ def _read_project_name(project_root: Path) -> str:
     project = data.get("project")
     name = project.get("name") if isinstance(project, dict) else None
     if not isinstance(name, str) or not name:
-        raise MalformedPyprojectError(
-            f"missing or empty [project].name in {pyproject}"
-        )
+        raise MalformedPyprojectError(f"missing or empty [project].name in {pyproject}")
     return name
 
 
@@ -157,18 +148,12 @@ def _preflight_output(config: BuildConfig) -> None:
     output_path = config.output_path.resolve(strict=False)
     parent = output_path.parent
     if not parent.is_dir():
-        raise OutputNotWritableError(
-            f"output parent directory does not exist: {parent}"
-        )
+        raise OutputNotWritableError(f"output parent directory does not exist: {parent}")
     if not os.access(parent, os.W_OK):
-        raise OutputNotWritableError(
-            f"output parent directory not writable: {parent}"
-        )
+        raise OutputNotWritableError(f"output parent directory not writable: {parent}")
     if output_path.exists() or output_path.is_symlink():
         if not output_path.is_file():
-            raise OutputNotWritableError(
-                f"output path is not a regular file: {output_path}"
-            )
+            raise OutputNotWritableError(f"output path is not a regular file: {output_path}")
         if not config.force:
             raise OutputExistsError(
                 f"output already exists; pass --force to overwrite: {output_path}"
@@ -192,9 +177,7 @@ def _run_pipeline(
     package_for_export = target.name if is_workspace else None
 
     resolver.export(config.project_root, req_path, package=package_for_export)
-    resolver.pip_install_target(
-        config.project_root, site_packages, requirement=req_path
-    )
+    resolver.pip_install_target(config.project_root, site_packages, requirement=req_path)
     resolver.build_wheel(config.project_root, dist_dir, all_packages=is_workspace)
     wheels = sorted(dist_dir.glob("*.whl"))
     _validate_wheels(wheels, target, is_workspace)
@@ -213,25 +196,16 @@ def _run_pipeline(
     return 0
 
 
-def _validate_wheels(
-    wheels: list[Path], target: _Target, is_workspace: bool
-) -> None:
+def _validate_wheels(wheels: list[Path], target: _Target, is_workspace: bool) -> None:
     if not wheels:
         raise WheelArtifactError("uv build produced no wheels")
     if is_workspace:
         return
     if len(wheels) != 1:
-        raise WheelArtifactError(
-            f"non-workspace build produced {len(wheels)} wheels; expected 1"
-        )
+        raise WheelArtifactError(f"non-workspace build produced {len(wheels)} wheels; expected 1")
     wheel_name = _read_wheel_metadata_name(wheels[0])
-    if (
-        workspace.pep503_normalize(wheel_name)
-        != workspace.pep503_normalize(target.name)
-    ):
-        raise WheelArtifactError(
-            f"wheel name {wheel_name!r} does not match target {target.name!r}"
-        )
+    if workspace.pep503_normalize(wheel_name) != workspace.pep503_normalize(target.name):
+        raise WheelArtifactError(f"wheel name {wheel_name!r} does not match target {target.name!r}")
 
 
 def _read_wheel_metadata_name(wheel: Path) -> str:
@@ -242,7 +216,7 @@ def _read_wheel_metadata_name(wheel: Path) -> str:
                     content = zf.read(info).decode("utf-8")
                     for line in content.splitlines():
                         if line.startswith("Name:"):
-                            return line[len("Name:"):].strip()
+                            return line[len("Name:") :].strip()
     except (zipfile.BadZipFile, OSError) as exc:
         raise WheelArtifactError(f"unreadable wheel: {wheel}: {exc}") from exc
     raise WheelArtifactError(f"could not find Name in wheel METADATA: {wheel}")
@@ -278,9 +252,7 @@ def _resolve_entry_point(config: BuildConfig, site_packages: Path) -> str:
         )
     if len(matches) > 1:
         files = sorted({str(p) for p, _ in matches})
-        raise ConsoleScriptNotFoundError(
-            f"ambiguous console script '{name}'; declared in {files}"
-        )
+        raise ConsoleScriptNotFoundError(f"ambiguous console script '{name}'; declared in {files}")
     _, value = matches[0]
     value = value.strip()
     _validate_entry_point_string(value)
@@ -298,22 +270,18 @@ def _build_env_dict(
         "name": target.name,
         "build_id": build_id,
         "entry_point": entry_point,
-        "built_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+        "built_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "moonlit_version": _MOONLIT_VERSION,
         "python_shebang": config.python_shebang,
     }
 
 
-def _write_archive_atomically(
-    config: BuildConfig, staging: Path, env_dict: dict
-) -> int:
+def _write_archive_atomically(config: BuildConfig, staging: Path, env_dict: dict) -> int:
     """Write the archive via a temp-then-rename dance (D15). Returns entry count."""
     output_path = config.output_path.resolve(strict=False)
     tmp_out = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
     try:
-        entry_count = _create_archive(
-            tmp_out, staging, env_dict, config.python_shebang
-        )
+        entry_count = _create_archive(tmp_out, staging, env_dict, config.python_shebang)
         os.replace(tmp_out, output_path)
         return entry_count
     finally:
@@ -325,9 +293,7 @@ def _write_archive_atomically(
                 pass
 
 
-def _create_archive(
-    tmp_out: Path, staging: Path, env_dict: dict, python_shebang: str
-) -> int:
+def _create_archive(tmp_out: Path, staging: Path, env_dict: dict, python_shebang: str) -> int:
     """Write the .pyz archive per spec 02 §3 step 9. Returns total zip-entry count.
 
     Layout: shebang prefix BEFORE the zip header, then a ZIP_DEFLATED archive
@@ -378,15 +344,11 @@ def _iter_staging_files(
         yield src, arcname, src.stat().st_mode
 
 
-def _write_file_to_zip(
-    zf: zipfile.ZipFile, src_file: Path, arcname: str, mode: int
-) -> None:
+def _write_file_to_zip(zf: zipfile.ZipFile, src_file: Path, arcname: str, mode: int) -> None:
     """Write src_file to zf at arcname, propagating exec bit on POSIX."""
     info = zipfile.ZipInfo(arcname)
     info.compress_type = zipfile.ZIP_DEFLATED
-    if os.name != "nt" and (
-        mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)
-    ):
+    if os.name != "nt" and (mode & (stat.S_IXUSR | stat.S_IXGRP | stat.S_IXOTH)):
         info.external_attr = 0o755 << 16
     with open(src_file, "rb") as f:
         zf.writestr(info, f.read())
@@ -409,9 +371,7 @@ def _serialize_env_json(env_dict: dict) -> bytes:
 
 def _read_main_template() -> bytes:
     """Read _templates/main_py.tmpl and normalize to LF line endings (spec §3 step 9.7)."""
-    template = (
-        importlib.resources.files("moonlit") / "_templates" / "main_py.tmpl"
-    )
+    template = importlib.resources.files("moonlit") / "_templates" / "main_py.tmpl"
     text = template.read_text(encoding="utf-8").replace("\r\n", "\n")
     return text.encode("utf-8")
 
@@ -422,9 +382,7 @@ def _iter_bootstrap_files() -> Iterator[tuple[str, bytes]]:
     yield from _walk_traversable(root, rel_prefix="")
 
 
-def _walk_traversable(
-    node: Traversable, *, rel_prefix: str
-) -> Iterator[tuple[str, bytes]]:
+def _walk_traversable(node: Traversable, *, rel_prefix: str) -> Iterator[tuple[str, bytes]]:
     # Sort by name so the bundled order is deterministic across runs.
     for child in sorted(node.iterdir(), key=lambda c: c.name):
         name = child.name

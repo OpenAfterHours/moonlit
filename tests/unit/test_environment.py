@@ -16,7 +16,6 @@ import pytest
 from moonlit._bootstrap.environment import Environment, load
 from moonlit._bootstrap.errors import EnvJsonError
 
-
 # ---------- helpers ----------
 
 
@@ -24,9 +23,7 @@ def valid_env() -> dict[str, Any]:
     return {
         "schema_version": 1,
         "name": "myapp",
-        "build_id": (
-            "a3f1c2d4e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff00"
-        ),
+        "build_id": ("a3f1c2d4e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff00"),
         "entry_point": "myapp.cli:main",
         "built_at": "2026-05-08T15:23:01Z",
         "moonlit_version": "0.1.0",
@@ -64,9 +61,11 @@ def test_load_returns_environment_for_valid_json(tmp_path: Path) -> None:
 
 
 def test_environment_is_frozen(tmp_path: Path) -> None:
+    # `dataclasses.FrozenInstanceError` is a subclass of AttributeError, so
+    # AttributeError covers the frozen-dataclass and the no-such-attribute cases.
     pyz = make_pyz_with(tmp_path, valid_env())
     env = load(pyz)
-    with pytest.raises(Exception):
+    with pytest.raises(AttributeError):
         env.name = "other"  # type: ignore[misc]
 
 
@@ -106,9 +105,7 @@ def test_invalid_utf8_raises(tmp_path: Path) -> None:
 # ---------- step 3: JSON parse ----------
 
 
-@pytest.mark.parametrize(
-    "payload", [b"{not json}", b"{", b"", b"   ", b'{"a": 1,}']
-)
+@pytest.mark.parametrize("payload", [b"{not json}", b"{", b"", b"   ", b'{"a": 1,}'])
 def test_invalid_json_raises(tmp_path: Path, payload: bytes) -> None:
     pyz = make_pyz(tmp_path, env_bytes=payload)
     with pytest.raises(EnvJsonError, match="not valid JSON"):
@@ -135,9 +132,7 @@ def test_schema_version_missing_raises(tmp_path: Path) -> None:
     env = valid_env()
     del env["schema_version"]
     pyz = make_pyz_with(tmp_path, env)
-    with pytest.raises(
-        EnvJsonError, match="schema_version missing or not an integer"
-    ):
+    with pytest.raises(EnvJsonError, match="schema_version missing or not an integer"):
         load(pyz)
 
 
@@ -145,9 +140,7 @@ def test_schema_version_missing_raises(tmp_path: Path) -> None:
 def test_schema_version_wrong_type_raises(tmp_path: Path, value: Any) -> None:
     env = {**valid_env(), "schema_version": value}
     pyz = make_pyz_with(tmp_path, env)
-    with pytest.raises(
-        EnvJsonError, match="schema_version missing or not an integer"
-    ):
+    with pytest.raises(EnvJsonError, match="schema_version missing or not an integer"):
         load(pyz)
 
 
@@ -199,9 +192,7 @@ def test_field_wrong_type_raises(tmp_path: Path, field: str, value: Any) -> None
 # ---------- step 9: format ----------
 
 
-@pytest.mark.parametrize(
-    "name", ["valid", "valid-name", "MyApp", "my_pkg", "1abc", "a"]
-)
+@pytest.mark.parametrize("name", ["valid", "valid-name", "MyApp", "my_pkg", "1abc", "a"])
 def test_valid_name_passes(tmp_path: Path, name: str) -> None:
     env = {**valid_env(), "name": name}
     pyz = make_pyz_with(tmp_path, env)
@@ -305,9 +296,7 @@ def test_invalid_built_at_raises(tmp_path: Path, ts: str) -> None:
 def test_empty_moonlit_version_raises(tmp_path: Path) -> None:
     env = {**valid_env(), "moonlit_version": ""}
     pyz = make_pyz_with(tmp_path, env)
-    with pytest.raises(
-        EnvJsonError, match="field 'moonlit_version' failed validation"
-    ):
+    with pytest.raises(EnvJsonError, match="field 'moonlit_version' failed validation"):
         load(pyz)
 
 
@@ -322,9 +311,7 @@ def test_empty_moonlit_version_raises(tmp_path: Path) -> None:
 def test_invalid_shebang_raises(tmp_path: Path, shebang: str) -> None:
     env = {**valid_env(), "python_shebang": shebang}
     pyz = make_pyz_with(tmp_path, env)
-    with pytest.raises(
-        EnvJsonError, match="field 'python_shebang' failed validation"
-    ):
+    with pytest.raises(EnvJsonError, match="field 'python_shebang' failed validation"):
         load(pyz)
 
 

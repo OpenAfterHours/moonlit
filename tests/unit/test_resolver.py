@@ -24,7 +24,6 @@ from moonlit.errors import (
     WheelArtifactError,
 )
 
-
 # ---------- FakeRun fixture ----------
 
 
@@ -40,9 +39,7 @@ class _FakeRun:
         self.calls.append((argv, dict(kwargs)))
         if self.raises is not None:
             raise self.raises
-        return SimpleNamespace(
-            returncode=self.returncode, stdout=self.stdout, stderr=self.stderr
-        )
+        return SimpleNamespace(returncode=self.returncode, stdout=self.stdout, stderr=self.stderr)
 
 
 @pytest.fixture
@@ -89,9 +86,7 @@ def test_export_argv_with_package(fake_run: _FakeRun, tmp_path: Path) -> None:
     ]
 
 
-def test_export_uses_pinned_subprocess_kwargs(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_export_uses_pinned_subprocess_kwargs(fake_run: _FakeRun, tmp_path: Path) -> None:
     resolver.export(tmp_path, tmp_path / "r.txt")
     _, kwargs = fake_run.calls[0]
     assert kwargs["shell"] is False
@@ -104,9 +99,7 @@ def test_export_uses_pinned_subprocess_kwargs(
     assert kwargs["env"] == dict(os.environ)
 
 
-def test_export_uv_binary_missing_raises_uv_not_found(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_export_uv_binary_missing_raises_uv_not_found(fake_run: _FakeRun, tmp_path: Path) -> None:
     fake_run.raises = FileNotFoundError(2, "No such file: 'uv'")
     with pytest.raises(UvNotFoundError):
         resolver.export(tmp_path, tmp_path / "r.txt")
@@ -148,9 +141,7 @@ def test_export_drift_stderr_raises_with_specific_message(
         resolver.export(tmp_path, tmp_path / "r.txt")
 
 
-def test_export_drift_message_suggests_uv_lock(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_export_drift_message_suggests_uv_lock(fake_run: _FakeRun, tmp_path: Path) -> None:
     fake_run.returncode = 1
     fake_run.stderr = "uv.lock is out of date with pyproject.toml"
     with pytest.raises(ExportError) as excinfo:
@@ -167,9 +158,7 @@ def test_export_other_failure_raises_generic_export_error(
         resolver.export(tmp_path, tmp_path / "r.txt")
 
 
-def test_export_no_lockfile_takes_precedence_over_drift(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_export_no_lockfile_takes_precedence_over_drift(fake_run: _FakeRun, tmp_path: Path) -> None:
     # Stderr containing both signals: NoLockfileError is checked first.
     fake_run.returncode = 1
     fake_run.stderr = "uv.lock not found and out of date"
@@ -184,9 +173,7 @@ def test_export_success_returns_none(fake_run: _FakeRun, tmp_path: Path) -> None
 # ---------- pip_install_target ----------
 
 
-def test_pip_install_with_requirement_argv(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_pip_install_with_requirement_argv(fake_run: _FakeRun, tmp_path: Path) -> None:
     target = tmp_path / "site-packages"
     req = tmp_path / "req.txt"
     resolver.pip_install_target(tmp_path, target, requirement=req)
@@ -204,9 +191,7 @@ def test_pip_install_with_requirement_argv(
     ]
 
 
-def test_pip_install_with_wheel_argv(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_pip_install_with_wheel_argv(fake_run: _FakeRun, tmp_path: Path) -> None:
     target = tmp_path / "site-packages"
     wheel = tmp_path / "myapp-0.1.0-py3-none-any.whl"
     resolver.pip_install_target(tmp_path, target, wheel=wheel)
@@ -223,12 +208,8 @@ def test_pip_install_with_wheel_argv(
     ]
 
 
-def test_pip_install_uses_pinned_subprocess_kwargs(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
-    resolver.pip_install_target(
-        tmp_path, tmp_path / "s", requirement=tmp_path / "r.txt"
-    )
+def test_pip_install_uses_pinned_subprocess_kwargs(fake_run: _FakeRun, tmp_path: Path) -> None:
+    resolver.pip_install_target(tmp_path, tmp_path / "s", requirement=tmp_path / "r.txt")
     _, kwargs = fake_run.calls[0]
     assert kwargs["shell"] is False
     assert kwargs["check"] is False
@@ -261,31 +242,21 @@ def test_pip_install_uv_binary_missing_raises_uv_not_found(
 ) -> None:
     fake_run.raises = FileNotFoundError(2, "No such file: 'uv'")
     with pytest.raises(UvNotFoundError):
-        resolver.pip_install_target(
-            tmp_path, tmp_path / "s", requirement=tmp_path / "r.txt"
-        )
+        resolver.pip_install_target(tmp_path, tmp_path / "s", requirement=tmp_path / "r.txt")
 
 
-def test_pip_install_failure_raises_staging_error(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_pip_install_failure_raises_staging_error(fake_run: _FakeRun, tmp_path: Path) -> None:
     fake_run.returncode = 1
     fake_run.stderr = "uv pip install: failure"
     with pytest.raises(StagingError, match="uv pip install"):
-        resolver.pip_install_target(
-            tmp_path, tmp_path / "s", requirement=tmp_path / "r.txt"
-        )
+        resolver.pip_install_target(tmp_path, tmp_path / "s", requirement=tmp_path / "r.txt")
 
 
-def test_pip_install_wheel_failure_raises_staging_error(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_pip_install_wheel_failure_raises_staging_error(fake_run: _FakeRun, tmp_path: Path) -> None:
     fake_run.returncode = 1
     fake_run.stderr = "could not install wheel"
     with pytest.raises(StagingError):
-        resolver.pip_install_target(
-            tmp_path, tmp_path / "s", wheel=tmp_path / "x.whl"
-        )
+        resolver.pip_install_target(tmp_path, tmp_path / "s", wheel=tmp_path / "x.whl")
 
 
 # ---------- build_wheel ----------
@@ -303,9 +274,7 @@ def test_build_wheel_argv_default(fake_run: _FakeRun, tmp_path: Path) -> None:
     ]
 
 
-def test_build_wheel_argv_with_all_packages(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_build_wheel_argv_with_all_packages(fake_run: _FakeRun, tmp_path: Path) -> None:
     out_dir = tmp_path / "dist"
     resolver.build_wheel(tmp_path, out_dir, all_packages=True)
     assert fake_run.calls[0][0] == [
@@ -318,9 +287,7 @@ def test_build_wheel_argv_with_all_packages(
     ]
 
 
-def test_build_wheel_uses_pinned_subprocess_kwargs(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_build_wheel_uses_pinned_subprocess_kwargs(fake_run: _FakeRun, tmp_path: Path) -> None:
     resolver.build_wheel(tmp_path, tmp_path / "d")
     _, kwargs = fake_run.calls[0]
     assert kwargs["shell"] is False
@@ -355,8 +322,6 @@ def test_resolver_is_the_only_subprocess_caller(fake_run: _FakeRun, tmp_path: Pa
     # Asserting indirectly: every public call here goes through fake_run, and we
     # verify exactly one subprocess.run invocation per public call.
     resolver.export(tmp_path, tmp_path / "r.txt")
-    resolver.pip_install_target(
-        tmp_path, tmp_path / "s", requirement=tmp_path / "r.txt"
-    )
+    resolver.pip_install_target(tmp_path, tmp_path / "s", requirement=tmp_path / "r.txt")
     resolver.build_wheel(tmp_path, tmp_path / "d")
     assert len(fake_run.calls) == 3

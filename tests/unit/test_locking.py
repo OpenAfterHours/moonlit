@@ -15,7 +15,6 @@ import pytest
 from moonlit._bootstrap import locking
 from moonlit._bootstrap.errors import LockTimeoutError
 
-
 # ---------- acquire / release happy path ----------
 
 
@@ -68,9 +67,7 @@ def test_acquire_after_release_succeeds(tmp_path: Path) -> None:
 # ---------- contention / timeout ----------
 
 
-def test_acquire_contended_times_out(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_acquire_contended_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(locking, "_TIMEOUT_S", 0.1)
     lock_path = tmp_path / "x.lock"
     held_fd = locking.acquire(lock_path)
@@ -186,9 +183,7 @@ def test_lock_releases_on_exception(tmp_path: Path) -> None:
     assert not lock_path.exists()
 
 
-def test_lock_propagates_timeout_error(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_lock_propagates_timeout_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setattr(locking, "_TIMEOUT_S", 0.05)
     lock_path = tmp_path / "x.lock"
     held_fd = locking.acquire(lock_path)

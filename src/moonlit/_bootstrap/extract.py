@@ -20,7 +20,6 @@ from .environment import Environment
 from .errors import ExtractionError
 from .locking import lock
 
-
 _OS_REPLACE_RETRIES = 3
 _OS_REPLACE_BACKOFF_S = 0.1
 
@@ -110,7 +109,7 @@ def _extract_to(archive_path: str | Path, tmp_dir: Path) -> None:
             arcname = info.filename
             if not arcname.startswith("site-packages/"):
                 continue  # D1: only the site-packages/ prefix is extracted.
-            rel = arcname[len("site-packages/"):]
+            rel = arcname[len("site-packages/") :]
             if not rel:
                 continue  # bare directory marker
             normalized = posixpath.normpath(rel)
@@ -122,14 +121,11 @@ def _extract_to(archive_path: str | Path, tmp_dir: Path) -> None:
 def _reject_unsafe_path(arcname: str, normalized: str) -> None:
     if normalized.startswith("/") or ".." in normalized.split("/"):
         raise ExtractionError(
-            f"archive entry has unsafe path after normalization: "
-            f"{arcname!r} -> {normalized!r}"
+            f"archive entry has unsafe path after normalization: {arcname!r} -> {normalized!r}"
         )
 
 
-def _extract_one(
-    zf: zipfile.ZipFile, info: zipfile.ZipInfo, dest: Path
-) -> None:
+def _extract_one(zf: zipfile.ZipFile, info: zipfile.ZipInfo, dest: Path) -> None:
     if info.is_dir():
         dest.mkdir(parents=True, exist_ok=True)
         return
@@ -151,9 +147,7 @@ def _extract_one(
             pass  # best-effort per spec §11
 
 
-def _extract_symlink(
-    zf: zipfile.ZipFile, info: zipfile.ZipInfo, dest: Path
-) -> None:
+def _extract_symlink(zf: zipfile.ZipFile, info: zipfile.ZipInfo, dest: Path) -> None:
     target = zf.read(info).decode("utf-8")
     if os.name != "nt":
         os.symlink(target, dest)
@@ -174,9 +168,7 @@ def _extract_symlink(
 def _resolve_archive_path(src_filename: str, target: str) -> str:
     if posixpath.isabs(target):
         return target.lstrip("/")
-    return posixpath.normpath(
-        posixpath.join(posixpath.dirname(src_filename), target)
-    )
+    return posixpath.normpath(posixpath.join(posixpath.dirname(src_filename), target))
 
 
 def _replace_with_retry(src: Path, dst: Path) -> None:

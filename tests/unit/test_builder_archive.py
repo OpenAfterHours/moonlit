@@ -20,7 +20,6 @@ import pytest
 from moonlit import builder
 from moonlit.builder import BuildConfig, build
 
-
 # ---------- shared fixtures (mirror of test_builder_pipeline.py) ----------
 
 
@@ -101,9 +100,7 @@ def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return state
 
 
-def make_config(
-    project_root: Path, output_path: Path, **overrides: Any
-) -> BuildConfig:
+def make_config(project_root: Path, output_path: Path, **overrides: Any) -> BuildConfig:
     defaults = dict(
         project_root=project_root,
         output_path=output_path,
@@ -124,9 +121,7 @@ def make_config(
 def test_shebang_is_first_bytes_of_file(
     project_root: Path, output_path: Path, fake_resolver: dict
 ) -> None:
-    config = make_config(
-        project_root, output_path, python_shebang="/usr/bin/env python3"
-    )
+    config = make_config(project_root, output_path, python_shebang="/usr/bin/env python3")
     build(config)
     assert output_path.read_bytes().startswith(b"#!/usr/bin/env python3\n")
 
@@ -134,9 +129,7 @@ def test_shebang_is_first_bytes_of_file(
 def test_custom_shebang_is_preserved(
     project_root: Path, output_path: Path, fake_resolver: dict
 ) -> None:
-    config = make_config(
-        project_root, output_path, python_shebang="/opt/python/3.13/bin/python"
-    )
+    config = make_config(project_root, output_path, python_shebang="/opt/python/3.13/bin/python")
     build(config)
     assert output_path.read_bytes().startswith(b"#!/opt/python/3.13/bin/python\n")
 
@@ -171,10 +164,7 @@ def test_site_packages_files_zipped_under_prefix(
         assert "site-packages/mypkg/__init__.py" in names
         assert "site-packages/mypkg/cli.py" in names
         assert zf.read("site-packages/mypkg/__init__.py") == b"# mypkg\n"
-        assert (
-            zf.read("site-packages/mypkg/cli.py")
-            == b"def main():\n    return 0\n"
-        )
+        assert zf.read("site-packages/mypkg/cli.py") == b"def main():\n    return 0\n"
 
 
 def test_arcnames_use_forward_slashes(
@@ -238,9 +228,7 @@ def test_bootstrap_files_match_source_bytes(
 ) -> None:
     config = make_config(project_root, output_path)
     build(config)
-    src_root = (
-        Path(__file__).resolve().parents[2] / "src" / "moonlit" / "_bootstrap"
-    )
+    src_root = Path(__file__).resolve().parents[2] / "src" / "moonlit" / "_bootstrap"
     with zipfile.ZipFile(output_path, "r") as zf:
         for name in [n for n in zf.namelist() if n.startswith("_bootstrap/")]:
             rel = name[len("_bootstrap/") :]
@@ -352,7 +340,6 @@ def test_zip_uses_deflate_compression(
 
 @pytest.mark.skipif(os.name == "nt", reason="POSIX exec-bit propagation only")
 def test_exec_bit_is_propagated_to_zipinfo(tmp_path: Path) -> None:
-    import stat as st
 
     staging = tmp_path / "staging"
     site_packages = staging / "site-packages"
@@ -388,9 +375,7 @@ def test_exec_bit_is_propagated_to_zipinfo(tmp_path: Path) -> None:
 # ---------- success line (spec 01 §8 / invariant I8) ----------
 
 
-_SUCCESS_LINE_RE = re.compile(
-    r"^wrote .+ \(\d+(\.\d+)? (B|KiB|MiB|GiB|TiB), \d+ entries\)$"
-)
+_SUCCESS_LINE_RE = re.compile(r"^wrote .+ \(\d+(\.\d+)? (B|KiB|MiB|GiB|TiB), \d+ entries\)$")
 
 
 def test_success_line_matches_spec_format(
@@ -484,7 +469,5 @@ def test_zip_entries_are_sorted_for_bootstrap(
     config = make_config(project_root, output_path)
     build(config)
     with zipfile.ZipFile(output_path, "r") as zf:
-        bootstrap_names = [
-            n for n in zf.namelist() if n.startswith("_bootstrap/")
-        ]
+        bootstrap_names = [n for n in zf.namelist() if n.startswith("_bootstrap/")]
     assert bootstrap_names == sorted(bootstrap_names)

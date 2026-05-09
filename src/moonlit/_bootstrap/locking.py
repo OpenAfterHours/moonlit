@@ -19,7 +19,6 @@ from time import monotonic, sleep
 
 from .errors import LockTimeoutError
 
-
 _TIMEOUT_S: float = 60.0
 _POLL_INTERVAL_S: float = 0.050
 
@@ -37,10 +36,12 @@ def acquire(lock_path: str | Path) -> int:
             return os.open(lock_path, flags, 0o600)
         except FileExistsError:
             if monotonic() >= deadline:
+                # `from None` because the FileExistsError is the expected polling
+                # signal, not an underlying cause to surface to the user.
                 raise LockTimeoutError(
                     f"lock acquisition timed out ({_TIMEOUT_S:g}s) at {lock_path}; "
                     f"remove this file or set MOONLIT_FORCE_EXTRACT=1"
-                )
+                ) from None
             sleep(_POLL_INTERVAL_S)
 
 

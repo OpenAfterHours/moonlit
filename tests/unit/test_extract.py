@@ -15,7 +15,6 @@ from moonlit._bootstrap import extract, locking
 from moonlit._bootstrap.environment import Environment
 from moonlit._bootstrap.errors import ExtractionError
 
-
 # ---------- helpers / fixtures ----------
 
 
@@ -143,9 +142,7 @@ def test_fast_path_does_not_re_extract(tmp_path: Path) -> None:
     assert (site_dir / "foo.py").read_bytes() == b"mutated\n"
 
 
-def test_fast_path_does_not_acquire_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fast_path_does_not_acquire_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # arch §10 falsifier: the fast path must take no lock when cache is hit.
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
@@ -164,9 +161,7 @@ def test_fast_path_does_not_acquire_lock(
 # ---------- MOONLIT_FORCE_EXTRACT (D16, spec 03 §9) ----------
 
 
-def test_force_extract_re_extracts(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_force_extract_re_extracts(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
     archive = make_pyz(tmp_path / "app.pyz", {"site-packages/foo.py": b"original\n"})
@@ -195,9 +190,7 @@ def test_force_extract_empty_string_is_unset(
     assert (site_dir / "foo.py").read_bytes() == b"mutated\n"
 
 
-def test_force_extract_zero_is_truthy(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_force_extract_zero_is_truthy(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # spec 03 §9: '0' is non-empty hence truthy.
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
@@ -359,9 +352,7 @@ def test_stale_old_siblings_are_swept(tmp_path: Path) -> None:
 # ---------- lock is acquired on slow path ----------
 
 
-def test_slow_path_acquires_lock(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_slow_path_acquires_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
     archive = make_pyz(tmp_path / "app.pyz", {"site-packages/foo.py": b"x\n"})

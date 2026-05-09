@@ -66,9 +66,7 @@ def _import_and_resolve(module_name: str, attr: str) -> object:
         try:
             obj = getattr(obj, part)
         except AttributeError as exc:
-            raise EntryPointError(
-                f"attribute {attr} not found on {module_name}"
-            ) from exc
+            raise EntryPointError(f"attribute {attr} not found on {module_name}") from exc
     return obj
 
 

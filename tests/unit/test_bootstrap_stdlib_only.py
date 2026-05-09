@@ -18,10 +18,7 @@ import sys
 from collections.abc import Iterator
 from pathlib import Path
 
-
-BOOTSTRAP_ROOT = (
-    Path(__file__).resolve().parents[2] / "src" / "moonlit" / "_bootstrap"
-)
+BOOTSTRAP_ROOT = Path(__file__).resolve().parents[2] / "src" / "moonlit" / "_bootstrap"
 
 # Per spec 03 §6, atomic_replace_dir is the only function that may use os.rename.
 _OS_RENAME_ALLOWED_FUNCTIONS = frozenset({"atomic_replace_dir"})
@@ -56,9 +53,7 @@ def _walk_calls_with_parent(
 ) -> Iterator[tuple[str | None, ast.Call]]:
     """Yield (innermost-enclosing-function-name | None, Call-node) for every Call."""
 
-    def recurse(
-        node: ast.AST, enclosing: str | None
-    ) -> Iterator[tuple[str | None, ast.Call]]:
+    def recurse(node: ast.AST, enclosing: str | None) -> Iterator[tuple[str | None, ast.Call]]:
         for child in ast.iter_child_nodes(node):
             if isinstance(child, ast.Call):
                 yield (enclosing, child)
@@ -100,13 +95,11 @@ def test_bootstrap_modules_import_only_stdlib() -> None:
     violations: list[str] = []
     for path in _bootstrap_files():
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
-        bad = sorted(
-            n for n in _absolute_imports(tree) if n not in sys.stdlib_module_names
-        )
+        bad = sorted(n for n in _absolute_imports(tree) if n not in sys.stdlib_module_names)
         if bad:
             violations.append(f"  {path.name}: {bad}")
-    assert not violations, (
-        "Bootstrap modules with non-stdlib imports (D7):\n" + "\n".join(violations)
+    assert not violations, "Bootstrap modules with non-stdlib imports (D7):\n" + "\n".join(
+        violations
     )
 
 
@@ -119,8 +112,7 @@ def test_no_os_rename_outside_d4_in_bootstrap() -> None:
             violations.append(f"  {path.name}: {bad}")
     assert not violations, (
         "os.rename used outside the D4 atomic_replace_dir protocol "
-        f"(allowed: {sorted(_OS_RENAME_ALLOWED_FUNCTIONS)}):\n"
-        + "\n".join(violations)
+        f"(allowed: {sorted(_OS_RENAME_ALLOWED_FUNCTIONS)}):\n" + "\n".join(violations)
     )
 
 
@@ -129,31 +121,23 @@ def test_no_os_rename_outside_d4_in_bootstrap() -> None:
 
 def test_gate_flags_third_party_import_statement() -> None:
     tree = ast.parse("import click\nimport os\nimport sys\n")
-    bad = sorted(
-        n for n in _absolute_imports(tree) if n not in sys.stdlib_module_names
-    )
+    bad = sorted(n for n in _absolute_imports(tree) if n not in sys.stdlib_module_names)
     assert bad == ["click"]
 
 
 def test_gate_flags_third_party_from_import() -> None:
     tree = ast.parse("from click import command\n")
-    bad = sorted(
-        n for n in _absolute_imports(tree) if n not in sys.stdlib_module_names
-    )
+    bad = sorted(n for n in _absolute_imports(tree) if n not in sys.stdlib_module_names)
     assert bad == ["click"]
 
 
 def test_gate_ignores_intra_package_relative_imports() -> None:
-    tree = ast.parse(
-        "from . import foo\nfrom ..bar import baz\nfrom .x.y import z\n"
-    )
+    tree = ast.parse("from . import foo\nfrom ..bar import baz\nfrom .x.y import z\n")
     assert _absolute_imports(tree) == set()
 
 
 def test_gate_handles_dotted_stdlib_imports() -> None:
-    tree = ast.parse(
-        "from collections.abc import Iterator\nimport importlib.resources\n"
-    )
+    tree = ast.parse("from collections.abc import Iterator\nimport importlib.resources\n")
     names = _absolute_imports(tree)
     assert names <= sys.stdlib_module_names
     assert "collections" in names
@@ -175,11 +159,7 @@ def test_gate_flags_os_rename_in_disallowed_function() -> None:
 
 
 def test_gate_allows_os_rename_inside_atomic_replace_dir() -> None:
-    src = (
-        "import os\n"
-        "def atomic_replace_dir(src, dst, pid):\n"
-        "    os.rename(src, dst)\n"
-    )
+    src = "import os\ndef atomic_replace_dir(src, dst, pid):\n    os.rename(src, dst)\n"
     assert _os_rename_calls_outside_d4(ast.parse(src)) == []
 
 
@@ -199,10 +179,5 @@ def test_gate_uses_innermost_enclosing_function() -> None:
 
 
 def test_gate_does_not_match_pathlib_rename_or_os_replace() -> None:
-    src = (
-        "import os\n"
-        "from pathlib import Path\n"
-        "Path('x').rename('y')\n"
-        "os.replace('a', 'b')\n"
-    )
+    src = "import os\nfrom pathlib import Path\nPath('x').rename('y')\nos.replace('a', 'b')\n"
     assert _os_rename_calls_outside_d4(ast.parse(src)) == []

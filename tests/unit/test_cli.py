@@ -16,8 +16,8 @@ from typing import Any
 
 import pytest
 
-from moonlit import builder, cli as cli_module
-
+from moonlit import builder
+from moonlit import cli as cli_module
 
 # ---------- fixtures ----------
 
@@ -57,9 +57,7 @@ def _fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
         ],
     }
 
-    def fake_export(
-        project_root: Path, output_file: Path, *, package: str | None = None
-    ) -> None:
+    def fake_export(project_root: Path, output_file: Path, *, package: str | None = None) -> None:
         state["calls"].append(("export", package))
         output_file.write_text("# fake reqs\n", encoding="utf-8")
 
@@ -78,18 +76,14 @@ def _fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             data = content if isinstance(content, bytes) else content.encode("utf-8")
             dest.write_bytes(data)
 
-    def fake_build_wheel(
-        project_root: Path, out_dir: Path, *, all_packages: bool = False
-    ) -> None:
+    def fake_build_wheel(project_root: Path, out_dir: Path, *, all_packages: bool = False) -> None:
         state["calls"].append(("build_wheel", all_packages))
         out_dir.mkdir(parents=True, exist_ok=True)
         for filename, name, version in state["wheels_to_make"]:
             _make_fake_wheel(out_dir / filename, name=name, version=version)
 
     monkeypatch.setattr(builder.resolver, "export", fake_export)
-    monkeypatch.setattr(
-        builder.resolver, "pip_install_target", fake_pip_install_target
-    )
+    monkeypatch.setattr(builder.resolver, "pip_install_target", fake_pip_install_target)
     monkeypatch.setattr(builder.resolver, "build_wheel", fake_build_wheel)
     return state
 
@@ -131,9 +125,7 @@ def output_path(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def call_cli(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
-) -> Any:
+def call_cli(monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]) -> Any:
     """Invoke moonlit.cli.main() with the given argv; return (exit_code, stdout, stderr)."""
 
     def _run(*args: str) -> tuple[int, str, str]:
@@ -207,22 +199,16 @@ def test_unknown_top_level_option_exit_2(call_cli: Any) -> None:
 # ---------- §3 flag interactions (exit 2) ----------
 
 
-def test_neither_e_nor_c_exit_2(
-    call_cli: Any, project_root: Path, output_path: Path
-) -> None:
+def test_neither_e_nor_c_exit_2(call_cli: Any, project_root: Path, output_path: Path) -> None:
     # spec invariant I1.
-    code, _, stderr = call_cli(
-        "build", str(project_root), "-o", str(output_path)
-    )
+    code, _, stderr = call_cli("build", str(project_root), "-o", str(output_path))
     assert code == 2
     assert "exactly one of" in stderr
 
 
-def test_both_e_and_c_exit_2(
-    call_cli: Any, project_root: Path, output_path: Path
-) -> None:
+def test_both_e_and_c_exit_2(call_cli: Any, project_root: Path, output_path: Path) -> None:
     # spec invariant I1.
-    code, _, stderr = call_cli(
+    code, _, _ = call_cli(
         "build",
         str(project_root),
         "-o",
@@ -235,9 +221,7 @@ def test_both_e_and_c_exit_2(
     assert code == 2
 
 
-def test_quiet_and_verbose_exit_2(
-    call_cli: Any, project_root: Path, output_path: Path
-) -> None:
+def test_quiet_and_verbose_exit_2(call_cli: Any, project_root: Path, output_path: Path) -> None:
     code, _, stderr = call_cli(
         "build",
         str(project_root),
@@ -252,9 +236,7 @@ def test_quiet_and_verbose_exit_2(
     assert "mutually exclusive" in stderr
 
 
-def test_no_dev_and_dev_exit_2(
-    call_cli: Any, project_root: Path, output_path: Path
-) -> None:
+def test_no_dev_and_dev_exit_2(call_cli: Any, project_root: Path, output_path: Path) -> None:
     code, _, stderr = call_cli(
         "build",
         str(project_root),
@@ -274,9 +256,7 @@ def test_missing_o_exit_2(call_cli: Any, project_root: Path) -> None:
     assert code == 2
 
 
-def test_unknown_build_option_exit_2(
-    call_cli: Any, project_root: Path, output_path: Path
-) -> None:
+def test_unknown_build_option_exit_2(call_cli: Any, project_root: Path, output_path: Path) -> None:
     code, _, stderr = call_cli(
         "build",
         str(project_root),
@@ -293,9 +273,7 @@ def test_unknown_build_option_exit_2(
 # ---------- §4 preflight checks ----------
 
 
-def test_project_does_not_exist_exit_2(
-    call_cli: Any, output_path: Path, tmp_path: Path
-) -> None:
+def test_project_does_not_exist_exit_2(call_cli: Any, output_path: Path, tmp_path: Path) -> None:
     code, _, _ = call_cli(
         "build",
         str(tmp_path / "missing"),
@@ -326,29 +304,19 @@ def test_uv_not_on_path_exit_3(
     assert "UvNotFoundError:" in stderr
 
 
-def test_missing_uv_lock_exit_4(
-    call_cli: Any, output_path: Path, tmp_path: Path
-) -> None:
+def test_missing_uv_lock_exit_4(call_cli: Any, output_path: Path, tmp_path: Path) -> None:
     proj = tmp_path / "no_lock"
     proj.mkdir()
-    (proj / "pyproject.toml").write_text(
-        '[project]\nname = "x"\n', encoding="utf-8"
-    )
-    code, _, stderr = call_cli(
-        "build", str(proj), "-o", str(output_path), "-e", "x:y"
-    )
+    (proj / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
+    code, _, stderr = call_cli("build", str(proj), "-o", str(output_path), "-e", "x:y")
     assert code == 4
     assert "NoLockfileError:" in stderr
 
 
-def test_missing_pyproject_exit_5(
-    call_cli: Any, output_path: Path, tmp_path: Path
-) -> None:
+def test_missing_pyproject_exit_5(call_cli: Any, output_path: Path, tmp_path: Path) -> None:
     proj = tmp_path / "no_pyproject"
     proj.mkdir()
-    code, _, stderr = call_cli(
-        "build", str(proj), "-o", str(output_path), "-e", "x:y"
-    )
+    code, _, stderr = call_cli("build", str(proj), "-o", str(output_path), "-e", "x:y")
     assert code == 5
     assert "MalformedPyprojectError:" in stderr
 
@@ -362,14 +330,10 @@ def test_uv_missing_takes_precedence_over_uv_lock_missing(
     # spec invariant I2: missing uv AND missing uv.lock → exit 3, not 4.
     proj = tmp_path / "double_fault"
     proj.mkdir()
-    (proj / "pyproject.toml").write_text(
-        '[project]\nname = "x"\n', encoding="utf-8"
-    )
+    (proj / "pyproject.toml").write_text('[project]\nname = "x"\n', encoding="utf-8")
     # No uv.lock.
     monkeypatch.setattr(shutil, "which", lambda *_a, **_kw: None)
-    code, _, _ = call_cli(
-        "build", str(proj), "-o", str(output_path), "-e", "x:y"
-    )
+    code, _, _ = call_cli("build", str(proj), "-o", str(output_path), "-e", "x:y")
     assert code == 3
 
 
@@ -379,9 +343,7 @@ def test_uv_missing_takes_precedence_over_uv_lock_missing(
 def test_workspace_without_package_exit_5(
     call_cli: Any, workspace_root: Path, output_path: Path
 ) -> None:
-    code, _, stderr = call_cli(
-        "build", str(workspace_root), "-o", str(output_path), "-e", "x:y"
-    )
+    code, _, stderr = call_cli("build", str(workspace_root), "-o", str(output_path), "-e", "x:y")
     assert code == 5
     assert "MissingPackageError:" in stderr
 
@@ -452,9 +414,7 @@ def test_pep503_normalized_package_match_succeeds(
 # ---------- §4 step 7: entry-point syntactic validity ----------
 
 
-def test_invalid_entry_point_exit_6(
-    call_cli: Any, project_root: Path, output_path: Path
-) -> None:
+def test_invalid_entry_point_exit_6(call_cli: Any, project_root: Path, output_path: Path) -> None:
     code, _, stderr = call_cli(
         "build",
         str(project_root),
@@ -470,15 +430,11 @@ def test_invalid_entry_point_exit_6(
 # ---------- §4 step 8: output preflight ----------
 
 
-def test_output_path_is_directory_exit_7(
-    call_cli: Any, project_root: Path, tmp_path: Path
-) -> None:
+def test_output_path_is_directory_exit_7(call_cli: Any, project_root: Path, tmp_path: Path) -> None:
     out = tmp_path / "out_as_dir.pyz"
     out.parent.mkdir(parents=True, exist_ok=True)
     out.mkdir()
-    code, _, stderr = call_cli(
-        "build", str(project_root), "-o", str(out), "-e", "x:y"
-    )
+    code, _, stderr = call_cli("build", str(project_root), "-o", str(out), "-e", "x:y")
     assert code == 7
     assert "OutputNotWritableError:" in stderr
 
@@ -576,9 +532,7 @@ def test_moonlit_error_format_class_colon_message(
 def test_parser_level_error_format_starts_with_error_colon(
     call_cli: Any, project_root: Path, output_path: Path
 ) -> None:
-    code, _, stderr = call_cli(
-        "build", str(project_root), "-o", str(output_path)
-    )
+    code, _, stderr = call_cli("build", str(project_root), "-o", str(output_path))
     assert code == 2
     assert stderr.startswith("error: ")
 
@@ -717,9 +671,7 @@ def test_invalid_shebang_with_newline_exit_2(
     assert "error:" in stderr
 
 
-def test_overlong_shebang_exit_2(
-    call_cli: Any, project_root: Path, output_path: Path
-) -> None:
+def test_overlong_shebang_exit_2(call_cli: Any, project_root: Path, output_path: Path) -> None:
     overlong = "/usr/bin/" + "x" * 200
     code, _, _ = call_cli(
         "build",
@@ -737,9 +689,7 @@ def test_overlong_shebang_exit_2(
 # ---------- I9: --help short-circuits validation ----------
 
 
-def test_build_help_works_without_pyproject(
-    call_cli: Any, tmp_path: Path
-) -> None:
+def test_build_help_works_without_pyproject(call_cli: Any, tmp_path: Path) -> None:
     # spec invariant I9: build --help in a directory with no pyproject.toml → exit 0.
     code, stdout, _ = call_cli("build", "--help", str(tmp_path))
     assert code == 0
@@ -759,7 +709,7 @@ def test_keyboard_interrupt_during_build_exits_130(
         raise KeyboardInterrupt
 
     monkeypatch.setattr(builder.resolver, "export", boom)
-    code, _, stderr = call_cli(
+    code, _, _ = call_cli(
         "build",
         str(project_root),
         "-o",

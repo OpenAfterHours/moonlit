@@ -18,7 +18,6 @@ from moonlit._bootstrap.environment import Environment
 from moonlit._bootstrap.errors import CollisionError, EntryPointError
 from moonlit._bootstrap.runner import run
 
-
 # ---------- helpers / fixtures ----------
 
 
@@ -158,9 +157,7 @@ def test_entry_point_called_with_no_arguments(tmp_path: Path) -> None:
     write_module(
         site_dir,
         "mymod_noargs",
-        "def main(*args, **kwargs):\n"
-        "    assert args == () and kwargs == {}\n"
-        "    return 0\n",
+        "def main(*args, **kwargs):\n    assert args == () and kwargs == {}\n    return 0\n",
     )
     assert run(make_env("mymod_noargs:main"), site_dir) == 0
 
@@ -222,14 +219,14 @@ def test_attribute_not_found_raises(tmp_path: Path) -> None:
 def test_dotted_attribute_first_segment_missing_raises(tmp_path: Path) -> None:
     site_dir = make_site_dir(tmp_path)
     write_module(site_dir, "mymod_no_foo", "# nothing\n")
-    with pytest.raises(EntryPointError, match="attribute Foo.bar not found"):
+    with pytest.raises(EntryPointError, match=r"attribute Foo\.bar not found"):
         run(make_env("mymod_no_foo:Foo.bar"), site_dir)
 
 
 def test_dotted_attribute_second_segment_missing_raises(tmp_path: Path) -> None:
     site_dir = make_site_dir(tmp_path)
     write_module(site_dir, "mymod_no_bar", "class Foo:\n    pass\n")
-    with pytest.raises(EntryPointError, match="attribute Foo.bar not found"):
+    with pytest.raises(EntryPointError, match=r"attribute Foo\.bar not found"):
         run(make_env("mymod_no_bar:Foo.bar"), site_dir)
 
 
