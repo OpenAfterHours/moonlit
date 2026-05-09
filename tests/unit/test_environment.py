@@ -315,6 +315,53 @@ def test_invalid_shebang_raises(tmp_path: Path, shebang: str) -> None:
         load(pyz)
 
 
+# ---------- step 10: optional python_version (spec 05 §3.8) ----------
+
+
+def test_python_version_absent_is_none(tmp_path: Path) -> None:
+    # v1-optional: archives produced before this field's introduction load
+    # cleanly with python_version == None.
+    pyz = make_pyz_with(tmp_path, valid_env())
+    assert load(pyz).python_version is None
+
+
+@pytest.mark.parametrize("value", ["3.13", "3.12", "3.8", "10.0", "3.123"])
+def test_python_version_valid_format_passes(tmp_path: Path, value: str) -> None:
+    env = {**valid_env(), "python_version": value}
+    pyz = make_pyz_with(tmp_path, env)
+    assert load(pyz).python_version == value
+
+
+@pytest.mark.parametrize("value", [123, 3.13, None, [3, 13], {"v": "3.13"}, True])
+def test_python_version_wrong_type_raises(tmp_path: Path, value: Any) -> None:
+    env = {**valid_env(), "python_version": value}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match="field 'python_version' has wrong type"):
+        load(pyz)
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "",
+        "3",  # major only
+        "3.13.7",  # patch included — rejected, only major.minor
+        "py-3.13",
+        "3.13 ",  # trailing space
+        " 3.13",
+        "v3.13",
+        "3..13",
+        ".13",
+        "3.",
+    ],
+)
+def test_python_version_bad_format_raises(tmp_path: Path, value: str) -> None:
+    env = {**valid_env(), "python_version": value}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match="field 'python_version' failed validation"):
+        load(pyz)
+
+
 # ---------- D8 ordering: earlier failures shadow later ones ----------
 
 

@@ -34,6 +34,9 @@ _BUILD_ID = re.compile(r"^[0-9a-f]{64}$")
 # entry_point each side: dotted Python identifier; no whitespace.
 _ENTRY_POINT_SIDE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
 
+# python_version: "<major>.<minor>" only (matches the cp<X><Y> wheel ABI tag).
+_PYTHON_VERSION = re.compile(r"^\d+\.\d+$")
+
 
 @dataclass(frozen=True)
 class Environment:
@@ -44,6 +47,9 @@ class Environment:
     built_at: str
     moonlit_version: str
     python_shebang: str
+    # Optional v1 field per spec 05 §7. Absent when an older moonlit produced
+    # the archive; the bootstrap skips the version check in that case.
+    python_version: str | None = None
 
 
 def load(archive_path: str | Path) -> Environment:
@@ -56,6 +62,7 @@ def load(archive_path: str | Path) -> Environment:
     _check_required_fields_present(parsed)
     _check_required_field_types(parsed)
     _check_field_formats(parsed)
+    python_version = _read_optional_python_version(parsed)
     return Environment(
         schema_version=parsed["schema_version"],
         name=parsed["name"],
@@ -64,6 +71,7 @@ def load(archive_path: str | Path) -> Environment:
         built_at=parsed["built_at"],
         moonlit_version=parsed["moonlit_version"],
         python_shebang=parsed["python_shebang"],
+        python_version=python_version,
     )
 
 
@@ -168,3 +176,20 @@ def _is_valid_shebang(value: str) -> bool:
     if value.startswith("#!"):
         return False
     return True
+
+
+def _read_optional_python_version(parsed: dict) -> str | None:
+    """Read and validate the optional ``python_version`` field.
+
+    Per spec 05 §7 / D9 this field is v1-optional: when absent the bootstrap
+    skips the version check (older archives keep working). When present it
+    must be a string matching ``<major>.<minor>``.
+    """
+    if "python_version" not in parsed:
+        return None
+    value = parsed["python_version"]
+    if not isinstance(value, str):
+        raise EnvJsonError("env.json: field 'python_version' has wrong type (expected string)")
+    if not _PYTHON_VERSION.fullmatch(value):
+        raise EnvJsonError("env.json: field 'python_version' failed validation")
+    return value

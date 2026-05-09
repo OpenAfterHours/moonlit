@@ -46,3 +46,15 @@ class ArchiveError(BootstrapError):
     """Archive resolution failed: empty sys.argv[0] or path is not a zipfile (exit 1)."""
 
     exit_code = 1
+
+
+class PythonVersionMismatchError(BootstrapError):
+    """Runtime Python's major.minor differs from the build-time Python (exit 1).
+
+    The bundled wheels carry ``cp<X><Y>`` ABI tags from the build interpreter;
+    a different runtime minor version skips them silently and surfaces as a
+    ``ModuleNotFoundError`` on the first compiled-extension import. This
+    error fails fast with both versions named so the user knows what to fix.
+    """
+
+    exit_code = 1

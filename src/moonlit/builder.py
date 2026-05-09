@@ -17,6 +17,7 @@ import platform
 import re
 import shutil
 import stat
+import sys
 import tempfile
 import time
 import tomllib
@@ -355,6 +356,9 @@ def _build_env_dict(
         "built_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "moonlit_version": _MOONLIT_VERSION,
         "python_shebang": config.python_shebang,
+        # v1-optional per spec 05 §7. Stamp the build interpreter's
+        # major.minor so the bootstrap can fail fast on ABI-tag mismatch.
+        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
     }
 
 

@@ -20,6 +20,7 @@
 | `built_at`        | string | yes      | `%Y-%m-%dT%H:%M:%SZ` (D10)                      | tooling                          |
 | `moonlit_version` | string | yes      | non-empty; PEP 440 (informational)              | tooling                          |
 | `python_shebang`  | string | yes      | non-empty; no `\n`; no leading `#!`             | tooling                          |
+| `python_version`  | string | no       | `^\d+\.\d+$` (major.minor only) — see §3.8      | bootstrap, tooling               |
 
 "Non-empty" means `len(s) > 0`. Whitespace-only is non-empty by this definition; that is accepted and not a producer error.
 
@@ -49,6 +50,8 @@ The `re.IGNORECASE` flag is mandatory. Without it, all-lowercase names (e.g. `my
 
 3.7 `python_shebang` — non-empty; no embedded newline; no leading `#!` (the build pipeline writes the `#!...\n` prefix outside the zip header — D1).
 
+3.8 `python_version` (v1-optional) — must match `^\d+\.\d+$` when present, e.g. `"3.13"`. Stores the build interpreter's `sys.version_info.major.minor` and matches the `cp<X><Y>` ABI tag of every wheel uv stages. The bootstrap compares this against the runtime interpreter's major.minor and exits 1 with a "built for X.Y, running A.B" message on mismatch — surfacing the real cause of the otherwise-mysterious `ModuleNotFoundError: No module named '<pkg>._core'` that occurs when a wheel's `.pyd` is silently skipped for ABI-tag mismatch. When the field is absent (older archives produced before this field's introduction) the bootstrap skips the check.
+
 ## 4. Validation algorithm (D8, consumer)
 
 Bootstrap and tooling validate in this exact order. The first failure exits the bootstrap with code 1 (per D3 runtime enumeration); each step has the exact error message shown:
@@ -62,6 +65,7 @@ Bootstrap and tooling validate in this exact order. The first failure exits the 
 7. All required fields present — `"env.json: missing required field '<field>'"`.
 8. Each required field has the correct JSON type (per Section 2) — `"env.json: field '<field>' has wrong type (expected <T>)"`. JSON `null` for any required field is reported here, since `None` is not the expected type.
 9. Each required field passes its format check (Section 3) — `"env.json: field '<field>' failed validation"`.
+10. If `python_version` is present, validate its type (`"env.json: field 'python_version' has wrong type (expected string)"`) and format (`"env.json: field 'python_version' failed validation"`). When absent, skip — the field is optional.
 
 Duplicate keys: `json.loads` silently keeps the last occurrence per stdlib semantics. v1 accepts this and does not install an `object_pairs_hook` to detect it. Documented, not enforced.
 
@@ -109,6 +113,7 @@ Reserved: `hashes`, `compile_pyc`, `preamble`, `reproducible`.
   "moonlit_version": "0.1.0",
   "name": "myapp",
   "python_shebang": "/usr/bin/env python3",
+  "python_version": "3.13",
   "schema_version": 1
 }
 ```
@@ -129,6 +134,9 @@ The example terminates with a single `\n` byte not shown above.
 | Required field present but wrong JSON type / null | 8    | 1              | `env.json: field '<field>' has wrong type (expected <T>)`                                     |
 | Required field fails format check                 | 9    | 1              | `env.json: field '<field>' failed validation`                                                 |
 | `entry_point` contains whitespace                 | 9    | 1              | `env.json: field 'entry_point' failed validation`                                             |
+| `python_version` present but non-string           | 10   | 1              | `env.json: field 'python_version' has wrong type (expected string)`                           |
+| `python_version` present but bad format           | 10   | 1              | `env.json: field 'python_version' failed validation`                                          |
+| `python_version` differs from runtime major.minor | n/a  | 1              | `this archive was built for Python <X.Y>, but you are running Python <A.B>; ...` (spec 03)    |
 | Duplicate keys in JSON source                     | 3*   | 0 (accepted)   | last-wins per `json.loads`; not detected                                                      |
 | Unknown extra field                               | n/a  | 0 (accepted)   | ignored (D9)                                                                                  |
 

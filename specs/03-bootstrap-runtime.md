@@ -9,7 +9,7 @@ The bootstrap is a separate process from the build-time CLI; its exit codes are 
 | Code | Meaning |
 |------|---------|
 | 0 | Success (entry point returned `None` or coerced to 0). |
-| 1 | Generic bootstrap error: `env.json` missing/malformed, archive unreadable, extraction I/O failure, `_bootstrap` collision, empty `sys.argv[0]`. |
+| 1 | Generic bootstrap error: `env.json` missing/malformed, archive unreadable, extraction I/O failure, `_bootstrap` collision, empty `sys.argv[0]`, runtime Python's major.minor differs from `env.python_version`. |
 | 2 | Entry-point resolution or return-value coercion failure. |
 | 3 | Lock acquisition timeout (60 s wall clock). |
 
@@ -39,8 +39,9 @@ sys.exit(bootstrap())
 
 1. Resolve **archive**. If `sys.argv[0]` is empty, exit 1 with `"cannot locate zipapp (sys.argv[0] is empty)"`. If the archive is not a zipfile (e.g. `python -m _bootstrap`), exit 1 with `"not a moonlit zipapp: <path>"`.
 2. Open the archive via `zipfile.ZipFile(archive, "r")`. On `BadZipFile` / `OSError`, exit 1.
-3. Read `env.json`, validate per D8 (existence, UTF-8 decode, `json.loads`, top-level dict, `schema_version` int and `not isinstance(_, bool)`, `== 1`, required keys, types, formats). First failure exits 1 with the matrix message.
+3. Read `env.json`, validate per D8 (existence, UTF-8 decode, `json.loads`, top-level dict, `schema_version` int and `not isinstance(_, bool)`, `== 1`, required keys, types, formats, optional `python_version` type/format). First failure exits 1 with the matrix message.
 4. Hydrate `Environment` dataclass.
+4a. **Python version check.** If `env.python_version` is present and `f"{sys.version_info.major}.{sys.version_info.minor}"` is not equal to it, exit 1 with `"this archive was built for Python <X.Y>, but you are running Python <A.B>; install a Python <X.Y> interpreter or rebuild with \`moonlit build --python <python-X.Y>\`"`. When the field is absent (older archives), skip this check. The check fires before cache-root resolution and extraction so a wrong-Python invocation never touches the cache.
 5. Compute `normalized_name = re.sub(r"[-_.]+", "-", env.name).lower()` and `cache_key`.
 6. Resolve **cache_root** (Section 3).
 7. Compute `site_parent` and `site_dir`.
@@ -204,7 +205,7 @@ The bootstrap MUST import only from the Python 3.13 standard library. Allowed mo
 | Module | Why |
 |--------|-----|
 | `os` | path ops, `os.open`, `os.replace`, `os.environ` |
-| `sys` | `sys.argv`, `sys.exit`, `sys.path`, `sys.stdlib_module_names` |
+| `sys` | `sys.argv`, `sys.exit`, `sys.path`, `sys.stdlib_module_names`, `sys.version_info` |
 | `json` | env.json parse |
 | `zipfile` | archive read + entry extraction |
 | `site` | `site.addsitedir` |

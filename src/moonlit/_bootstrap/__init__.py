@@ -19,7 +19,7 @@ import zipfile
 from pathlib import Path
 
 from . import environment, extract, runner
-from .errors import ArchiveError, BootstrapError
+from .errors import ArchiveError, BootstrapError, PythonVersionMismatchError
 
 
 def bootstrap() -> int:
@@ -39,6 +39,7 @@ def bootstrap() -> int:
 def _do_bootstrap() -> int:
     archive = _resolve_archive()
     env = environment.load(archive)
+    _check_python_version(env)
     cache_root = _resolve_cache_root()
     _ensure_cache_root_exists(cache_root)
     site_dir = extract.materialize(env, cache_root, archive)
@@ -52,6 +53,22 @@ def _resolve_archive() -> str:
     if not zipfile.is_zipfile(archive):
         raise ArchiveError(f"not a moonlit zipapp: {archive}")
     return archive
+
+
+def _check_python_version(env: environment.Environment) -> None:
+    # spec 03 §2 step 4a: archives produced by moonlit < the field's introduction
+    # don't carry python_version; preserve the old behavior for those.
+    if env.python_version is None:
+        return
+    actual = f"{sys.version_info.major}.{sys.version_info.minor}"
+    if actual == env.python_version:
+        return
+    raise PythonVersionMismatchError(
+        f"this archive was built for Python {env.python_version}, "
+        f"but you are running Python {actual}; "
+        f"install a Python {env.python_version} interpreter or rebuild "
+        f"with `moonlit build --python <python-{env.python_version}>`"
+    )
 
 
 def _resolve_cache_root() -> Path:

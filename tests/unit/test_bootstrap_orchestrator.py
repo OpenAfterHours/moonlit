@@ -153,6 +153,83 @@ def test_malformed_env_json_returns_1(
     assert "not valid JSON" in capsys.readouterr().err
 
 
+# ---------- step 4a: Python version check (spec §2 / spec 05 §3.8) ----------
+
+
+def _wrong_minor_version() -> str:
+    """Pick a major.minor that's guaranteed to differ from the runtime."""
+    return f"{sys.version_info.major}.{sys.version_info.minor + 1}"
+
+
+def _runtime_version() -> str:
+    return f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+def test_python_version_match_succeeds(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    archive = make_pyz(
+        tmp_path / "app.pyz",
+        {**valid_env_dict(), "python_version": _runtime_version()},
+        {"myapp.py": "def main():\n    return 0\n"},
+    )
+    set_argv(monkeypatch, archive)
+    assert bootstrap() == 0
+
+
+def test_python_version_mismatch_returns_1(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    archive = make_pyz(
+        tmp_path / "app.pyz",
+        {**valid_env_dict(), "python_version": _wrong_minor_version()},
+        {"myapp.py": "def main():\n    return 0\n"},
+    )
+    set_argv(monkeypatch, archive)
+    assert bootstrap() == 1
+    err = capsys.readouterr().err
+    assert "moonlit: " in err
+    assert _wrong_minor_version() in err
+    assert _runtime_version() in err
+    assert "built for Python" in err
+
+
+def test_python_version_mismatch_skips_extraction(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # spec §2 step 4a: the check fires before cache-root + extraction so a
+    # wrong-Python invocation never touches the cache.
+    custom_cache = tmp_path / "should_stay_empty"
+    monkeypatch.setenv("MOONLIT_ROOT", str(custom_cache))
+    archive = make_pyz(
+        tmp_path / "app.pyz",
+        {**valid_env_dict(), "python_version": _wrong_minor_version()},
+        {"myapp.py": "def main():\n    return 0\n"},
+    )
+    set_argv(monkeypatch, archive)
+    assert bootstrap() == 1
+    # No site-packages got extracted under custom_cache.
+    if custom_cache.is_dir():
+        for child in custom_cache.iterdir():
+            assert "site-packages" not in {p.name for p in child.rglob("*")}
+
+
+def test_python_version_absent_skips_check(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Older archives (produced before the field's introduction) have no
+    # python_version → bootstrap proceeds unconditionally.
+    archive = make_pyz(
+        tmp_path / "app.pyz",
+        valid_env_dict(),  # no python_version
+        {"myapp.py": "def main():\n    return 0\n"},
+    )
+    set_argv(monkeypatch, archive)
+    assert bootstrap() == 0
+
+
 # ---------- runner errors propagate with correct exit codes ----------
 
 

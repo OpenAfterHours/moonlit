@@ -14,6 +14,7 @@ extract dist-info into site-packages).
 
 import json
 import os
+import sys
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -560,6 +561,17 @@ def test_env_json_uses_raw_workspace_member_name(
     build(config)
     env = _read_env_json(output_path)
     assert env["name"] == "shouter"  # raw, per D5
+
+
+def test_env_json_records_build_python_major_minor(
+    project_root: Path, output_path: Path, fake_resolver: dict
+) -> None:
+    # spec 05 §3.8: build interpreter's major.minor is stamped so the
+    # bootstrap can reject a runtime with the wrong ABI tag.
+    config = make_config(project_root, output_path, entry_point="myapp.cli:main")
+    build(config)
+    env = _read_env_json(output_path)
+    assert env["python_version"] == f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
 # ---------- archive output side effects ----------
