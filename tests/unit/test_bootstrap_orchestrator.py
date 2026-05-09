@@ -332,15 +332,20 @@ def test_resolve_cache_root_expands_user_in_moonlit_root(
     assert resolved.name == "custom_moonlit_root"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-specific cache-root branch")
 def test_resolve_cache_root_default_on_windows_uses_localappdata(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
+    # Forcing os.name="nt" on a POSIX host would make Path() construct a
+    # WindowsPath, which raises UnsupportedOperation. So this test is
+    # Windows-only; the symmetric POSIX case is covered below.
     monkeypatch.delenv("MOONLIT_ROOT", raising=False)
     monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "appdata"))
     monkeypatch.setattr(os, "name", "nt")
     assert _resolve_cache_root() == Path(str(tmp_path / "appdata")) / "moonlit"
 
 
+@pytest.mark.skipif(os.name != "nt", reason="Windows-specific cache-root branch")
 def test_resolve_cache_root_falls_back_to_home_when_localappdata_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
