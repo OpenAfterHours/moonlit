@@ -161,7 +161,10 @@ def build_cmd(
     if windows_exe and not output_file.lower().endswith(".exe"):
         # spec §3 rule 5 / D19b: --windows-exe demands an .exe output suffix.
         raise click.UsageError("--windows-exe requires --output-file to end in .exe")
-    if windows_exe and ctx.get_parameter_source("python_shebang") == click.core.ParameterSource.DEFAULT:
+    if (
+        windows_exe
+        and ctx.get_parameter_source("python_shebang") == click.core.ParameterSource.DEFAULT
+    ):
         # D19c: pivot the default shebang to one Windows can resolve.
         python_shebang = "python.exe"
     _validate_shebang(python_shebang)

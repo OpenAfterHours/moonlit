@@ -1025,10 +1025,20 @@ def test_windows_exe_default_shebang_pivots_to_python_exe(
     # "/usr/bin/env python3".
     out = tmp_path / "out" / "app.exe"
     out.parent.mkdir()
-    monkeypatch.setattr(sys, "argv", [
-        "moonlit", "build", str(project_root), "--windows-exe",
-        "-e", "myapp:main", "-o", str(out),
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "moonlit",
+            "build",
+            str(project_root),
+            "--windows-exe",
+            "-e",
+            "myapp:main",
+            "-o",
+            str(out),
+        ],
+    )
     captured: dict[str, Any] = {}
     real_build = cli_module.run_build
 
@@ -1054,11 +1064,22 @@ def test_windows_exe_explicit_python_flag_passthrough(
     # D19c: when -p is explicitly provided, --windows-exe does NOT override it.
     out = tmp_path / "out" / "app.exe"
     out.parent.mkdir()
-    monkeypatch.setattr(sys, "argv", [
-        "moonlit", "build", str(project_root), "--windows-exe",
-        "-p", "C:\\custom\\python.exe",
-        "-e", "myapp:main", "-o", str(out),
-    ])
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "moonlit",
+            "build",
+            str(project_root),
+            "--windows-exe",
+            "-p",
+            "C:\\custom\\python.exe",
+            "-e",
+            "myapp:main",
+            "-o",
+            str(out),
+        ],
+    )
     captured: dict[str, Any] = {}
     real_build = cli_module.run_build
 

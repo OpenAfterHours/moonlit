@@ -14,7 +14,6 @@ behavior lives in ``tests/`` (Python). Skip on non-Windows.
 
 import io
 import os
-import shutil
 import subprocess
 import sys
 import tempfile
@@ -41,9 +40,7 @@ def _build_fake_zipapp() -> bytes:
 def _assemble_exe(tmp: Path, shebang: str) -> Path:
     out = tmp / "smoke.exe"
     out.write_bytes(
-        LAUNCHER.read_bytes()
-        + b"#!" + shebang.encode("ascii") + b"\n"
-        + _build_fake_zipapp()
+        LAUNCHER.read_bytes() + b"#!" + shebang.encode("ascii") + b"\n" + _build_fake_zipapp()
     )
     return out
 
@@ -62,7 +59,8 @@ def main() -> int:
         exe = _assemble_exe(tmp, "py -3")
         proc = subprocess.run(
             [str(exe), "alpha", "beta gamma", "delta"],
-            capture_output=True, text=True,
+            capture_output=True,
+            text=True,
         )
         if proc.returncode != 0:
             print(f"FAIL: happy path returncode={proc.returncode}", file=sys.stderr)
@@ -86,7 +84,10 @@ def main() -> int:
         exe2 = _assemble_exe(tmp, "")
         proc = subprocess.run([str(exe2), "x"], capture_output=True, text=True)
         if proc.returncode != 0:
-            print(f"FAIL: default shebang; rc={proc.returncode}, stderr={proc.stderr}", file=sys.stderr)
+            print(
+                f"FAIL: default shebang; rc={proc.returncode}, stderr={proc.stderr}",
+                file=sys.stderr,
+            )
             return 1
         print("OK default-shebang fallback")
 
