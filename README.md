@@ -118,11 +118,20 @@ tests/
 
 ## Contributing
 
-Read [`CLAUDE.md`](CLAUDE.md) for development conventions and [`specs/`](specs/) for the design contracts (start with `specs/README.md`, then `specs/00-architecture.md`). Run the test suite with:
+Read [`CLAUDE.md`](CLAUDE.md) for development conventions and [`specs/`](specs/) for the design contracts (start with `specs/README.md`, then `specs/00-architecture.md`).
 
 ```sh
-uv run pytest                        # 476 tests, ~10s with e2e
-uv run pytest tests/unit              # unit only, <2s
+uv run pytest                       # 476 tests, ~10s with e2e
+uv run pytest tests/unit            # unit only, <2s
+uv run ruff format --check .        # format check (CI gate)
+uv run ruff check .                 # lints (CI gate)
+uv run zensical build --strict      # docs build (CI gate)
 ```
 
 The e2e suite (`tests/e2e/`) shells out to real `uv` and produces real `.pyz` files; it skips automatically if `uv` is not on `PATH`.
+
+CI runs all four gates on every pull request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+## License
+
+[MIT](LICENSE).
