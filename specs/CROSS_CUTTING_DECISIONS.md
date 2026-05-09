@@ -161,10 +161,14 @@ Both the user-supplied `--package` value AND the workspace member `[project].nam
 ## D13. Locking semantics
 
 - Lock file path: `<cache_root>/<cache_key>.lock` (sibling to the cache dir, NOT inside it).
-- Acquired via `os.open(lock_path, os.O_CREAT | os.O_EXCL | os.O_RDWR)` in a poll loop: 50 ms sleep between attempts, 60 s wall-clock timeout.
-- Released via `os.close(fd); os.unlink(lock_path)` in a `finally` block.
+- The lock file is opened via `os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)` (NOT `O_EXCL` — the file is shared; only the OS-managed lock on the open file description is exclusive).
+- Acquired via OS-managed advisory locking, dispatched on platform:
+  - POSIX: `fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)`. Failure raises `BlockingIOError`.
+  - Windows: `msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)` against byte 0. Failure raises `OSError` with `errno` in `{EACCES, EAGAIN, EDEADLK}`.
+- Both forms are non-blocking. The poll loop drives retries: 50 ms sleep between attempts, 60 s wall-clock timeout. First attempt has no preceding sleep.
+- Released by closing the fd. The kernel releases the OS lock on process death (normal exit, signal, SIGKILL, power loss). The lock file itself is NOT unlinked — unlinking it would race against another process opening the same path, since `flock` semantics are per open file description and unrelated open file descriptions on the same inode see different locks. The persistent lock file is small (zero bytes) and lives next to the cache dir it guards.
 - `MOONLIT_FORCE_EXTRACT=1` does NOT bypass the lock — it only forces re-extraction after the lock is acquired and the existence check is skipped.
-- Stale-lock recovery: manual `rm <cache_root>/<cache_key>.lock`. Document this in the bootstrap and cache-layout specs. Future v0.2 work: `flock`/`msvcrt.LK_NBLCK` for OS-managed lock release on process death.
+- Stale-lock recovery is no longer required for crashed processes: the kernel releases the lock automatically. A user-visible 60 s timeout still applies for live contention. The previous documented escape hatch (manually `rm <cache_root>/<cache_key>.lock`) is preserved as a no-op safety net — removing the file is harmless when nothing holds the lock.
 
 ## D14. Cache hit fast path (double-checked locking)
 
