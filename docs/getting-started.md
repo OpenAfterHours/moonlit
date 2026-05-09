@@ -8,20 +8,26 @@
 
 ## Install
 
-`moonlit` is not yet on PyPI. Install from source:
+```sh
+uv tool install moonlit
+moonlit --help
+```
+
+Alternative installers:
 
 ```sh
-git clone <moonlit-repo> moonlit
+pipx install moonlit
+# or
+pip install --user moonlit
+```
+
+From source (for hacking on moonlit itself):
+
+```sh
+git clone https://github.com/OpenAfterHours/moonlit.git
 cd moonlit
 uv sync
 uv run moonlit --help
-```
-
-For one-shot use without a clone:
-
-```sh
-uv tool install --from <moonlit-repo> moonlit
-moonlit --help
 ```
 
 ## Single-package walkthrough

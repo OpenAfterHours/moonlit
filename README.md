@@ -13,10 +13,22 @@ Pre-release (0.x). API and CLI surface are stabilizing toward 1.0; the produced 
 
 ## Install
 
-`moonlit` is not yet on PyPI. From source:
+```sh
+uv tool install moonlit
+```
+
+Or with pipx / pip:
 
 ```sh
-git clone <repo> moonlit
+pipx install moonlit
+# or
+pip install --user moonlit
+```
+
+From source:
+
+```sh
+git clone https://github.com/OpenAfterHours/moonlit.git
 cd moonlit
 uv sync
 uv run moonlit --help
@@ -40,6 +52,10 @@ python ./shouter.pyz
 
 The produced `.pyz` is self-contained: `uv.lock`'s entire dependency closure is bundled, plus the target's own wheel. On first run it extracts `site-packages/` to a per-build cache (`%LOCALAPPDATA%\moonlit` on Windows, `~/.moonlit` on POSIX); subsequent runs hit the cache directly without unpacking.
 
+### Build output
+
+Default mode shows per-step progress on stderr — a Braille spinner per step on TTYs (`⠋ freezing dependencies (uv export)` → `✓ frozen · 87 packages · 0.7s`), or plain `→`/`✓` lines when stderr is not a TTY (CI logs, file redirect, pipe). The spec-frozen success line `wrote <path> (<size>, <N> entries)` always lands on stdout. `-q`/`--quiet` suppresses stderr; `-v`/`--verbose` additionally echoes `+ uv <argv>` (POSIX-shlex format) before each `uv` call.
+
 ## How it works
 
 The `moonlit build` pipeline runs ten ordered steps:
@@ -61,7 +77,7 @@ At runtime, the `_bootstrap` package reads `env.json`, derives a cache key from 
 
 | | |
 |---|---|
-| [`docs/index.md`](docs/index.md) | Overview and at-a-glance example. |
+| [`docs/index.md`](docs/index.md) | Marketing landing page (rendered via the standalone `overrides/home.html` template — markdown body intentionally empty). |
 | [`docs/getting-started.md`](docs/getting-started.md) | Walkthroughs for single-package projects and uv workspaces. |
 | [`docs/cli-reference.md`](docs/cli-reference.md) | Every flag, every exit code, preflight order, stdout/stderr semantics. |
 | [`docs/runtime.md`](docs/runtime.md) | What runs inside the `.pyz`: cache layout, env vars, runtime exit codes, stale-lock recovery. |
@@ -77,13 +93,18 @@ uv run zensical serve   # http://127.0.0.1:8000
 
 ```
 src/moonlit/
+├── __init__.py         # __version__
+├── __main__.py         # `python -m moonlit` entry
 ├── cli.py              # Click frontend
 ├── builder.py          # 10-step build pipeline orchestrator
 ├── resolver.py         # the only module that calls `uv` subprocesses
 ├── workspace.py        # parses [tool.uv.workspace]
 ├── hashing.py          # deterministic build_id
 ├── errors.py           # MoonlitError hierarchy with stable exit codes
-├── _templates/main_py.tmpl
+├── _progress.py        # spinner + step-line progress reporter (build-time)
+├── _templates/
+│   ├── __init__.py
+│   └── main_py.tmpl    # rendered into every .pyz as __main__.py
 └── _bootstrap/         # SHIPPED INSIDE EVERY .pyz — stdlib-only
     ├── __init__.py     # bootstrap() orchestrator
     ├── environment.py  # env.json validation
@@ -93,8 +114,10 @@ src/moonlit/
     └── errors.py
 
 specs/                  # Foundational design contracts (start here for hacking)
+overrides/home.html     # Standalone landing template (docs homepage)
+scripts/release.py      # Version-bump + tag helper (run before publishing)
 tests/
-├── unit/               # 451 unit tests
+├── unit/               # 479 unit tests
 └── e2e/                # 25 contract tests via subprocess
 ```
 
@@ -121,8 +144,8 @@ tests/
 Read [`CLAUDE.md`](CLAUDE.md) for development conventions and [`specs/`](specs/) for the design contracts (start with `specs/README.md`, then `specs/00-architecture.md`).
 
 ```sh
-uv run pytest                       # 476 tests, ~10s with e2e
-uv run pytest tests/unit            # unit only, <2s
+uv run pytest                       # 504 tests, ~11s with e2e
+uv run pytest tests/unit            # unit only, ~5s
 uv run ruff format --check .        # format check (CI gate)
 uv run ruff check .                 # lints (CI gate)
 uv run zensical build --strict      # docs build (CI gate)
@@ -131,6 +154,17 @@ uv run zensical build --strict      # docs build (CI gate)
 The e2e suite (`tests/e2e/`) shells out to real `uv` and produces real `.pyz` files; it skips automatically if `uv` is not on `PATH`.
 
 CI runs all four gates on every pull request via [`.github/workflows/ci.yml`](.github/workflows/ci.yml).
+
+### Cutting a release
+
+`scripts/release.py` is the release helper. It enforces a clean working tree, that you're on the release branch, and that the target tag doesn't already exist; runs pytest + ruff + `uv build` against the current code; bumps the version in `pyproject.toml`, `src/moonlit/__init__.py`, and `overrides/home.html`; runs `uv lock`; commits as `chore: release vX.Y.Z`; and creates an annotated tag. Pushing and `uv publish` are deliberately left to you.
+
+```sh
+uv run python scripts/release.py patch        # 0.1.0 -> 0.1.1
+uv run python scripts/release.py minor        # 0.1.0 -> 0.2.0
+uv run python scripts/release.py 0.2.3        # explicit (must be strictly greater)
+uv run python scripts/release.py patch --dry-run
+```
 
 ## License
 
