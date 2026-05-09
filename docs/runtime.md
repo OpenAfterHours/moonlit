@@ -1,0 +1,169 @@
+# Runtime
+
+This page describes what happens *inside* a `.pyz` produced by `moonlit build` — when an end user runs `python app.pyz`, what files appear on disk, and how the bootstrap maps environment variables to behavior.
+
+## What runs first
+
+Every `.pyz` ships with three things at the zip root:
+
+- `__main__.py` — a 3-line shim that imports and invokes `bootstrap()`.
+- `_bootstrap/` — a stdlib-only package with the runtime logic.
+- `env.json` — the build-time descriptor (name, build_id, entry_point, …).
+
+When you run `python app.pyz`, Python's zipapp machinery prepends the archive to `sys.path` and executes `__main__.py`:
+
+```python
+import sys
+from _bootstrap import bootstrap
+sys.exit(bootstrap())
+```
+
+The bootstrap then:
+
+1. Resolves the archive path via `os.path.abspath(sys.argv[0])`.
+2. Reads and validates `env.json`.
+3. Computes a cache key from the `[project].name` and the build_id.
+4. Resolves the cache root (see below).
+5. Either takes the **fast path** (cache hit, no lock) or the **slow path** (acquire lock, extract to tempdir, atomically install, release lock).
+6. Calls `site.addsitedir(<cache>/<key>/site-packages)` so the staged tree reaches `sys.path` and `.pth` files are processed.
+7. Resolves the entry point string (or its `MOONLIT_ENTRY_POINT` override), imports the module, walks the attribute path, calls `obj()`.
+8. Coerces the return value: `None` → 0, `int` → masked `& 0xFF`, otherwise `int(result) & 0xFF` (or exit 2 if uncoercible).
+
+## Cache layout
+
+The cache root is resolved once per invocation:
+
+| Platform | Default cache root |
+|---|---|
+| Windows | `%LOCALAPPDATA%\moonlit` (or `~/.moonlit` if `LOCALAPPDATA` is unset) |
+| POSIX (Linux, macOS) | `~/.moonlit` |
+| Anywhere | `MOONLIT_ROOT` overrides if set |
+
+Inside the cache root:
+
+```
+<cache_root>/
+├── <cache_key>/                # Populated, atomic-replaced site-packages parent.
+│   └── site-packages/          # Contents of the .pyz's site-packages/.
+├── <cache_key>.lock            # Sentinel lock file (only present mid-extraction).
+└── .<cache_key>.tmp.<pid>/     # Staging dir for one in-progress extraction.
+```
+
+The **cache_key** is `<normalized_name>_<build_id>`, where:
+
+- `<normalized_name>` is the [PEP 503](https://peps.python.org/pep-0503/) normalization of `env.json.name` (lowercase; runs of `[-_.]` collapsed to `-`). So a project authored as `My_App.Name` produces `my-app-name` here.
+- `<build_id>` is a 64-character lowercase hex SHA-256 digest of every file under the staged `site-packages/` (excluding `__pycache__/` segments and `.pyc` files), interleaved with their forward-slash relative paths and separated by `\0` bytes.
+
+Two builds with the same `uv` version, Python interpreter (major.minor.patch), `uv.lock`, and `pyproject.toml` produce the same `build_id` — and therefore the same cache key, so they share a cache.
+
+### Safe to delete
+
+Anything under the cache root is safe to delete. The next invocation will re-extract.
+
+To clear the entire cache:
+
+=== "Windows"
+
+    ```pwsh
+    Remove-Item -Recurse -Force $env:LOCALAPPDATA\moonlit
+    ```
+
+=== "POSIX"
+
+    ```sh
+    rm -rf ~/.moonlit
+    ```
+
+To clear just one build's cache:
+
+```sh
+rm -rf <cache_root>/<cache_key>/
+```
+
+## Fast path and slow path
+
+The cache hit fast path is **unsynchronized** — readers of a populated cache do not contend with each other and do not acquire the lock. The bootstrap proceeds directly to `site.addsitedir()`.
+
+The slow path is the only mutator. It acquires `<cache_root>/<cache_key>.lock` via `os.open(..., O_CREAT | O_EXCL | O_RDWR)` with a 50ms poll interval and a 60-second wall-clock timeout. After acquiring, it re-checks the cache (a sibling may have just won the race), extracts to a per-pid tempdir, and atomically installs via:
+
+1. Rename the existing `<cache_key>/` aside to `<cache_key>.old.<pid>/`.
+2. `os.replace(<tmp_dir>, <cache_key>/)`.
+3. `shutil.rmtree(<cache_key>.old.<pid>/)`, best-effort.
+
+This protocol is correct on POSIX *and* Windows since Python 3.3.
+
+If extraction fails between rename and replace, the original `<cache_key>.old.<pid>/` is renamed back. If the process is hard-killed during extraction, the tempdir and lock file leak; recovery options are below.
+
+## Environment variables
+
+The bootstrap reads exactly four:
+
+| Variable | Effect |
+|---|---|
+| `MOONLIT_ROOT` | Override the cache root. The path is `Path(value).expanduser().resolve()`. |
+| `MOONLIT_FORCE_EXTRACT` | Force re-extraction even on a cache hit. **Does not** bypass the lock; only the existence-skip is suppressed. |
+| `MOONLIT_ENTRY_POINT` | Override `env.json.entry_point`. Useful for testing. Same `module:attr` syntax. |
+| `MOONLIT_DEBUG` | On a bootstrap-internal error, print the Python traceback after the `moonlit:` line. Does not affect user-code traceback printing (Python's default excepthook handles those unconditionally). |
+
+"Truthy" means *present and non-empty after `os.environ.get(name, "")`*. The empty string is treated as unset; `MOONLIT_FORCE_EXTRACT=0` is **non-empty hence truthy** (surprising but consistent — the policy never special-cases "0", "false", or "no").
+
+Names beginning with `MOONLIT_` other than the four above are reserved for future versions and ignored today.
+
+## Runtime exit codes
+
+The runtime exit-code namespace is **independent** from the build-time CLI's. Different process, different concerns.
+
+| Code | Meaning |
+|---|---|
+| 0 | Success (entry point returned `None`, an `int` in `[0, 255]`, or anything coercible to one). |
+| 1 | Generic bootstrap-internal error: `env.json` missing or fails validation, archive unreadable, extraction I/O failure, `_bootstrap` collision in the staged tree, empty `sys.argv[0]`. |
+| 2 | Entry-point resolution or return-value coercion failure: malformed entry point, module not importable, attribute not found on module, return value can't be coerced to an `int`. |
+| 3 | Lock acquisition timed out (60 seconds). |
+
+Other non-zero codes originate from user code via its own `sys.exit()` or the masked `int()` of its return value.
+
+User-code exceptions propagate normally — Python's default `sys.excepthook` runs, the traceback prints unconditionally, and the process exits 1 from the unhandled exception.
+
+## Stale-lock recovery
+
+If a previous run was killed mid-extraction, you may see a leftover `<cache_root>/<cache_key>.lock` file. The next invocation will poll for up to 60 seconds and then exit 3 with:
+
+```
+moonlit: lock acquisition timed out (60s) at <path>; remove this file or set MOONLIT_FORCE_EXTRACT=1
+```
+
+To recover, either remove the lock file:
+
+```sh
+rm <cache_root>/<cache_key>.lock
+```
+
+…or trigger a forced re-extraction in the next run:
+
+```sh
+MOONLIT_FORCE_EXTRACT=1 python ./app.pyz
+```
+
+`MOONLIT_FORCE_EXTRACT=1` does **not** bypass the lock; it only suppresses the existence-skip after the lock is acquired. Two concurrent forced runs serialize correctly: the second sees the first's installed tree, replaces it via the atomic protocol, and the first reader is unaffected because it already holds an open `addsitedir` reference.
+
+## Threat model
+
+`env.json` is **not authenticated**. A modified `.pyz` could ship a forged `env.json` and the bootstrap would trust it. Integrity verification is the `--no-modify` feature deferred to v0.2. The bootstrap does not auto-execute privileged behavior keyed solely on `name`.
+
+## env.json schema
+
+For reference; the `env.json` produced by `moonlit build` looks like:
+
+```json
+{
+  "build_id": "<64 hex chars>",
+  "built_at": "2026-05-09T15:23:01Z",
+  "entry_point": "myapp.cli:main",
+  "moonlit_version": "0.1.0",
+  "name": "myapp",
+  "python_shebang": "/usr/bin/env python3",
+  "schema_version": 1
+}
+```
+
+Validation is ordered (the first failure decides the error message): existence in archive, UTF-8 decode, JSON parse, top-level dict, `schema_version` is an integer (not bool) equal to `1`, all required fields present, types correct, format checks (PEP 508 name regex, lowercase 64-hex `build_id`, `module:attr` entry point, `%Y-%m-%dT%H:%M:%SZ` `built_at`, non-empty `moonlit_version`, non-empty `python_shebang` with no embedded newline and no leading `#!`).
