@@ -165,9 +165,7 @@ def _runtime_version() -> str:
     return f"{sys.version_info.major}.{sys.version_info.minor}"
 
 
-def test_python_version_match_succeeds(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_python_version_match_succeeds(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     archive = make_pyz(
         tmp_path / "app.pyz",
         {**valid_env_dict(), "python_version": _runtime_version()},
@@ -216,9 +214,7 @@ def test_python_version_mismatch_skips_extraction(
             assert "site-packages" not in {p.name for p in child.rglob("*")}
 
 
-def test_python_version_absent_skips_check(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_python_version_absent_skips_check(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Older archives (produced before the field's introduction) have no
     # python_version → bootstrap proceeds unconditionally.
     archive = make_pyz(
