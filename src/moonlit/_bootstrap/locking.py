@@ -53,7 +53,7 @@ def acquire(lock_path: str | Path) -> int:
         raise
 
 
-def release(fd: int, lock_path: str | Path) -> None:  # noqa: ARG001
+def release(fd: int, lock_path: str | Path) -> None:
     """Release the OS lock and close ``fd``; the lock file is left in place.
 
     ``lock_path`` is accepted for symmetry with :func:`acquire`; it is not

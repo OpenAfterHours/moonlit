@@ -80,9 +80,7 @@ def test_acquire_contended_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyP
         locking.release(held_fd, lock_path)
 
 
-def test_acquire_failure_does_not_leak_fd(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_acquire_failure_does_not_leak_fd(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # If acquisition times out, the fd opened on lock_path is closed before
     # raising. Otherwise we'd leak fds across repeated misses.
     monkeypatch.setattr(locking, "_TIMEOUT_S", 0.05)
