@@ -67,3 +67,9 @@ class WheelArtifactError(MoonlitError):
 
 class InternalError(MoonlitError):
     exit_code = 11
+
+
+class BadArchiveError(MoonlitError):
+    """Input ``.pyz`` is not a valid moonlit archive (exit 12)."""
+
+    exit_code = 12

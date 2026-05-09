@@ -474,10 +474,10 @@ def _walk_traversable(node: Traversable, *, rel_prefix: str) -> Iterator[tuple[s
 def _print_success_line(output_path: Path, entry_count: int) -> None:
     """spec 01 §8: ``wrote <path> (<size>, <N> entries)`` to stdout."""
     size = output_path.stat().st_size
-    print(f"wrote {output_path} ({_humanize_bytes(size)}, {entry_count} entries)")
+    print(f"wrote {output_path} ({humanize_bytes(size)}, {entry_count} entries)")
 
 
-def _humanize_bytes(n: int) -> str:
+def humanize_bytes(n: int) -> str:
     """Format n as bytes with binary units (spec 01 invariant I8)."""
     units = ("B", "KiB", "MiB", "GiB", "TiB")
     size = float(n)

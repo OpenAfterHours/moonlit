@@ -159,7 +159,6 @@ The following are intentionally deferred from the MVP. If a task touches one of 
 - `--preamble` script
 - `--extend-pythonpath` for subprocesses
 - `--site-packages` extra-dirs flag
-- `moonlit info <pyz>` subcommand
 - `--windows-exe` launcher (distlib-style native .exe wrapping)
 - Cross-interpreter builds (`--python-version` / `--platform` pass-through to uv)
 

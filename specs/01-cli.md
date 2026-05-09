@@ -22,7 +22,7 @@ moonlit [--version | -V] [--help | -h] <subcommand> [args...]
 - No subcommand and no flag → top-level help to stderr, exit 2.
 - Unknown subcommand (with or without `--help`) → `error: no such subcommand: <name>` on stderr, exit 2. (Deliberate: `--help` does not redeem an unknown subcommand; that would mask typos.)
 
-MVP defines exactly one subcommand: `build`.
+v0.1 defined exactly one subcommand: `build`. v0.2 adds `info`.
 
 ### 2.2 `moonlit build`
 
@@ -47,6 +47,47 @@ moonlit build [PROJECT] [flags]
 |       | `--help` / `-h` | flag | — | no | Print build help to stdout, exit 0. Short-circuits all validation (D3 codes 2-11 are not raised). |
 
 Unknown flags exit 2 with the literal text `error: no such option: <flag>` on stderr.
+
+### 2.3 `moonlit info`
+
+```
+moonlit info <PYZ> [--json] [--help|-h]
+```
+
+Read-only inspection of a moonlit-built `.pyz`. Prints the contents of `env.json` (the archive's manifest, see `specs/05-env-json-schema.md`) plus a summary line of file size and zip-entry count.
+
+`PYZ` is required; resolved via `Path(PYZ).resolve(strict=False)`.
+
+| Short | Long | Type | Default | Required | Description |
+|-------|------|------|---------|----------|-------------|
+|       | `--json` | flag | false | no | Emit the raw `env.json` bytes from the archive on stdout, with no header line. Validation still runs first; a malformed `env.json` exits 12 even with `--json`. |
+|       | `--help` / `-h` | flag | — | no | Print info help to stdout, exit 0. |
+
+**Validation order** (first failure short-circuits):
+
+1. `PYZ` resolves to an existing path → exit 2 if not.
+2. `PYZ` is a regular file (not a directory, FIFO, device, dangling symlink) → exit 2 if not.
+3. `PYZ` is a zipfile (`zipfile.is_zipfile`) → exit 12 (`BadArchiveError`) if not.
+4. `env.json` member exists in the archive and validates per D8 (`specs/05-env-json-schema.md` §4) → exit 12 if any step fails. The validator's specific message ("env.json: ...") is appended to the BadArchiveError message so users see *why* the archive is malformed.
+
+**Default output (stdout)**:
+
+```
+<resolved_PYZ_path> (<bytes_humanized>, <N> entries)
+  build_id         <build_id>
+  built_at         <built_at>
+  entry_point      <entry_point>
+  moonlit_version  <moonlit_version>
+  name             <name>
+  python_shebang   <python_shebang>
+  schema_version   <schema_version>
+```
+
+The header-line format mirrors the `build` success line (Section 8). Fields are listed alphabetically for byte-stable test assertions.
+
+**`--json` output (stdout)**: the raw bytes of the archive's `env.json` member written to `sys.stdout.buffer` (no decoding, no re-formatting). The build pipeline emits a UTF-8 `\n`-terminated payload (spec 05 §5), so this is a complete JSON document.
+
+**Stability**: the existence of the `info` subcommand is stable from 0.2 onward. The default-mode header and field-listing format MAY change in 0.x; `--json` output (the raw `env.json` bytes) is byte-stable and pinned to spec 05.
 
 ## 3. Flag interaction rules
 
@@ -100,6 +141,7 @@ This table mirrors D3 exactly. Runtime exit codes are independent (see `specs/03
 | 9 | `uv pip install --target` failure | `StagingError` |
 | 10 | `uv build` wheel failure or wheel artifact issue | `WheelArtifactError` |
 | 11 | Internal invariant violation | `InternalError` |
+| 12 | Input archive is not a moonlit zipapp (used by `info`) | `BadArchiveError` |
 | 130 | SIGINT | — |
 
 `--version` failures (e.g. unreadable package metadata) are exit 1 (unhandled), not exit 0.

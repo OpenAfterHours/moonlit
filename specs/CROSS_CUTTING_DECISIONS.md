@@ -47,6 +47,7 @@ Drop `--reinstall-package`. Drop the brittle "re-export and grep `-e file://`" a
 | 9 | uv pip install --target failure | StagingError |
 | 10 | uv build wheel failure or wheel artifact issue | WheelArtifactError |
 | 11 | Internal invariant violation | InternalError |
+| 12 | Input archive is not a moonlit zipapp (used by `info`) | BadArchiveError |
 | 130 | SIGINT | — |
 
 **Runtime (bootstrap) enumeration is INDEPENDENT** — different process, different namespace:

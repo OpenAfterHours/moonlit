@@ -1,29 +1,35 @@
 """moonlit CLI. Spec 01 (specs/01-cli.md) is the contract.
 
-Top-level command groups, the ``build`` subcommand, the §4 preflight order
-(parse → project dir → ``uv`` on PATH → pyproject exists → ``uv.lock`` →
-workspace shape → entry-point syntax → output preflight → pipeline), the
-§7 error-message format (``<ClassName>: <message>`` for MoonlitError,
-``error: <message>`` for parser-level), and the §9 SIGINT handler (D18).
+Top-level command groups, the ``build`` and ``info`` subcommands, the §4
+preflight order (parse → project dir → ``uv`` on PATH → pyproject exists →
+``uv.lock`` → workspace shape → entry-point syntax → output preflight →
+pipeline), the §7 error-message format (``<ClassName>: <message>`` for
+MoonlitError, ``error: <message>`` for parser-level), and the §9 SIGINT
+handler (D18).
 
 Most pipeline-level errors are raised by :mod:`moonlit.builder`; the CLI
 raises only the early preflight subset (UvNotFoundError, NoLockfileError,
 MalformedPyprojectError on missing pyproject) before delegating to
-:func:`moonlit.builder.build`.
+:func:`moonlit.builder.build`. The ``info`` subcommand is implemented
+directly in this module since it has no pipeline.
 """
 
 import shutil
 import signal
 import sys
 import traceback
+import zipfile
 from pathlib import Path
 
 import click
 
 from . import __version__
-from .builder import BuildConfig
+from ._bootstrap import environment as bootstrap_env
+from ._bootstrap.errors import EnvJsonError as _BootstrapEnvJsonError
+from .builder import BuildConfig, humanize_bytes
 from .builder import build as run_build
 from .errors import (
+    BadArchiveError,
     MalformedPyprojectError,
     MoonlitError,
     NoLockfileError,
@@ -180,6 +186,38 @@ def build_cmd(
     sys.exit(run_build(config))
 
 
+@cli.command(
+    name="info",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+@click.argument("pyz", type=click.Path())
+@click.option(
+    "--json",
+    "json_mode",
+    is_flag=True,
+    default=False,
+    help="Emit raw env.json bytes to stdout (no header).",
+)
+def info_cmd(pyz: str, json_mode: bool) -> None:
+    """Print the env.json manifest of a moonlit-built .pyz."""
+    pyz_path = _validate_info_target(pyz)
+
+    if not zipfile.is_zipfile(pyz_path):
+        raise BadArchiveError(f"not a zipfile: {pyz_path}")
+
+    try:
+        env = bootstrap_env.load(pyz_path)
+    except _BootstrapEnvJsonError as exc:
+        raise BadArchiveError(f"{pyz_path}: {exc}") from exc
+
+    if json_mode:
+        with zipfile.ZipFile(pyz_path, "r") as zf:
+            sys.stdout.buffer.write(zf.read("env.json"))
+        return
+
+    _print_info(pyz_path, env)
+
+
 def main() -> None:
     """Top-level entry point. Translates exceptions to spec §6 / D3 exit codes."""
     _install_sigint_handler()
@@ -234,6 +272,38 @@ def _install_sigint_handler() -> None:
 
 def _verbose_from_argv() -> bool:
     return any(arg in ("-v", "--verbose") for arg in sys.argv[1:])
+
+
+def _validate_info_target(pyz: str) -> Path:
+    """spec 01 §2.3 steps 1-2: PYZ resolves to an existing regular file."""
+    pyz_path = Path(pyz).resolve(strict=False)
+    if not pyz_path.exists():
+        raise click.UsageError(f"PYZ does not exist: {pyz_path}")
+    if not pyz_path.is_file():
+        raise click.UsageError(f"PYZ is not a regular file: {pyz_path}")
+    return pyz_path
+
+
+def _print_info(pyz_path: Path, env: bootstrap_env.Environment) -> None:
+    """spec 01 §2.3 default-mode output: header line + sorted field listing."""
+    size = pyz_path.stat().st_size
+    with zipfile.ZipFile(pyz_path, "r") as zf:
+        n_entries = len(zf.infolist())
+    click.echo(f"{pyz_path} ({humanize_bytes(size)}, {n_entries} entries)")
+    fields = sorted(
+        [
+            ("build_id", env.build_id),
+            ("built_at", env.built_at),
+            ("entry_point", env.entry_point),
+            ("moonlit_version", env.moonlit_version),
+            ("name", env.name),
+            ("python_shebang", env.python_shebang),
+            ("schema_version", str(env.schema_version)),
+        ]
+    )
+    width = max(len(name) for name, _ in fields)
+    for name, value in fields:
+        click.echo(f"  {name.ljust(width)}  {value}")
 
 
 def _validate_shebang(shebang: str) -> None:

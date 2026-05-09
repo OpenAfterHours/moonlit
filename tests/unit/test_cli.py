@@ -799,3 +799,175 @@ def test_python_dash_m_invokes_main(
     import moonlit.__main__ as dunder_main
 
     assert dunder_main.main is cli_module.main
+
+
+# ---------- §2.3 `moonlit info` ----------
+
+
+def _valid_env_dict(name: str = "myapp") -> dict[str, Any]:
+    return {
+        "schema_version": 1,
+        "name": name,
+        "build_id": "a" * 64,
+        "entry_point": f"{name}.cli:main",
+        "built_at": "2026-05-09T00:00:00Z",
+        "moonlit_version": "0.1.0",
+        "python_shebang": "/usr/bin/env python3",
+    }
+
+
+def _serialize_env(env_dict: dict[str, Any]) -> bytes:
+    # spec 05 §5: indent=2, sort_keys, no ensure_ascii, separators pinned, trailing \n.
+    return (
+        json.dumps(
+            env_dict,
+            indent=2,
+            sort_keys=True,
+            ensure_ascii=False,
+            separators=(",", ": "),
+        )
+        + "\n"
+    ).encode("utf-8")
+
+
+def _make_pyz_with_env(
+    path: Path,
+    *,
+    env_bytes: bytes | None,
+    extra_entries: dict[str, bytes] | None = None,
+) -> Path:
+    """Hand-craft a minimal .pyz: env.json + a few site-packages entries.
+
+    ``env_bytes=None`` produces an archive with no env.json member at all.
+    """
+    extra_entries = extra_entries or {}
+    with open(path, "wb") as fp:
+        fp.write(b"#!/usr/bin/env python3\n")
+        with zipfile.ZipFile(fp, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("__main__.py", b"# stub\n")
+            if env_bytes is not None:
+                zf.writestr("env.json", env_bytes)
+            for arc, content in extra_entries.items():
+                zf.writestr(arc, content)
+    return path
+
+
+@pytest.fixture
+def good_pyz(tmp_path: Path) -> Path:
+    return _make_pyz_with_env(
+        tmp_path / "app.pyz",
+        env_bytes=_serialize_env(_valid_env_dict()),
+        extra_entries={"site-packages/myapp/__init__.py": b"# myapp\n"},
+    )
+
+
+def test_info_help_short_circuits(call_cli: Any) -> None:
+    code, stdout, _ = call_cli("info", "--help")
+    assert code == 0
+    assert "Usage" in stdout
+
+
+def test_info_no_arg_exit_2(call_cli: Any) -> None:
+    code, _, stderr = call_cli("info")
+    assert code == 2
+    assert "error:" in stderr
+
+
+def test_info_default_prints_all_seven_fields(call_cli: Any, good_pyz: Path) -> None:
+    code, stdout, stderr = call_cli("info", str(good_pyz))
+    assert code == 0
+    assert stderr == ""
+    # Header line: <resolved_path> (<size>, <N> entries).
+    first_line = stdout.splitlines()[0]
+    assert str(good_pyz) in first_line
+    assert "entries)" in first_line
+    # Field listing: alphabetical, two-space indent, gutter to value column.
+    for field in (
+        "build_id",
+        "built_at",
+        "entry_point",
+        "moonlit_version",
+        "name",
+        "python_shebang",
+        "schema_version",
+    ):
+        assert field in stdout
+    # Spot-check actual values appear.
+    assert "a" * 64 in stdout
+    assert "myapp.cli:main" in stdout
+    assert "/usr/bin/env python3" in stdout
+    assert "2026-05-09T00:00:00Z" in stdout
+
+
+def test_info_field_listing_is_alphabetical(call_cli: Any, good_pyz: Path) -> None:
+    code, stdout, _ = call_cli("info", str(good_pyz))
+    assert code == 0
+    lines = stdout.splitlines()[1:]  # drop header
+    field_names = [line.strip().split()[0] for line in lines if line.strip()]
+    assert field_names == sorted(field_names)
+
+
+def test_info_json_emits_raw_env_bytes(call_cli: Any, tmp_path: Path) -> None:
+    # spec §2.3: --json writes the raw env.json bytes from the archive to
+    # stdout. The producer recipe (spec 05 §5) is sort_keys + indent=2 + utf-8
+    # + trailing \n, so round-tripping through capsys's utf-8 decode is faithful.
+    env_bytes = _serialize_env(_valid_env_dict())
+    pyz = _make_pyz_with_env(tmp_path / "app.pyz", env_bytes=env_bytes)
+    code, stdout, stderr = call_cli("info", str(pyz), "--json")
+    assert code == 0
+    assert stderr == ""
+    assert stdout.encode("utf-8") == env_bytes
+
+
+def test_info_missing_file_exit_2(call_cli: Any, tmp_path: Path) -> None:
+    missing = tmp_path / "nope.pyz"
+    code, _, stderr = call_cli("info", str(missing))
+    assert code == 2
+    assert "error:" in stderr
+    assert str(missing) in stderr
+
+
+def test_info_directory_exit_2(call_cli: Any, tmp_path: Path) -> None:
+    a_dir = tmp_path / "x.pyz"
+    a_dir.mkdir()
+    code, _, stderr = call_cli("info", str(a_dir))
+    assert code == 2
+    assert "error:" in stderr
+
+
+def test_info_not_a_zipfile_exit_12(call_cli: Any, tmp_path: Path) -> None:
+    plain = tmp_path / "x.pyz"
+    plain.write_bytes(b"not a zipfile")
+    code, _, stderr = call_cli("info", str(plain))
+    assert code == 12
+    assert stderr.startswith("BadArchiveError:")
+    assert "not a zipfile" in stderr or "not a moonlit" in stderr
+
+
+def test_info_zip_without_env_json_exit_12(call_cli: Any, tmp_path: Path) -> None:
+    pyz = _make_pyz_with_env(tmp_path / "x.pyz", env_bytes=None)
+    code, _, stderr = call_cli("info", str(pyz))
+    assert code == 12
+    assert stderr.startswith("BadArchiveError:")
+    assert "env.json missing from archive" in stderr
+
+
+def test_info_malformed_env_json_exit_12_with_field_message(call_cli: Any, tmp_path: Path) -> None:
+    bad = _valid_env_dict()
+    bad["entry_point"] = "no_colon_here"
+    pyz = _make_pyz_with_env(tmp_path / "x.pyz", env_bytes=_serialize_env(bad))
+    code, _, stderr = call_cli("info", str(pyz))
+    assert code == 12
+    assert stderr.startswith("BadArchiveError:")
+    assert "entry_point" in stderr
+
+
+def test_info_json_validates_before_emitting(call_cli: Any, tmp_path: Path) -> None:
+    # spec §2.3: --json still runs validation; a malformed env.json exits 12.
+    bad = _valid_env_dict()
+    bad["build_id"] = "not_64_hex"
+    pyz = _make_pyz_with_env(tmp_path / "x.pyz", env_bytes=_serialize_env(bad))
+    code, stdout, stderr = call_cli("info", str(pyz), "--json")
+    assert code == 12
+    assert stdout == ""
+    assert "BadArchiveError:" in stderr
