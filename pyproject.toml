@@ -2,12 +2,26 @@
 name = "moonlit"
 version = "0.1.0"
 description = "uv-powered Python zipapp builder."
+readme = "README.md"
 license = "MIT"
 license-files = ["LICENSE"]
 authors = [
     { name = "Phil Harrison" },
 ]
 requires-python = ">=3.13"
+keywords = ["zipapp", "uv", "pep441", "bundler", "packaging", "pyz", "shiv"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: POSIX",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Software Development :: Build Tools",
+    "Topic :: System :: Archiving :: Packaging",
+]
 dependencies = [
     "click>=8.1",
 ]
@@ -15,12 +29,35 @@ dependencies = [
 [project.scripts]
 moonlit = "moonlit.cli:main"
 
+[project.urls]
+Homepage      = "https://github.com/OpenAfterHours/moonlit"
+Documentation = "https://openafterhours.github.io/moonlit/"
+Repository    = "https://github.com/OpenAfterHours/moonlit"
+Issues        = "https://github.com/OpenAfterHours/moonlit/issues"
+
 [build-system]
 requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/moonlit"]
+
+# Sdist needs an explicit allow-list so the built docs site (`site/`), the
+# uv venv (`.venv/`), and other local caches don't sweep into the tarball.
+[tool.hatch.build.targets.sdist]
+include = [
+    "src/",
+    "tests/",
+    "specs/",
+    "docs/",
+    "overrides/",
+    "zensical.toml",
+    "README.md",
+    "LICENSE",
+    "CLAUDE.md",
+    "IMPLEMENTATION_PLAN.md",
+    "pyproject.toml",
+]
 
 [dependency-groups]
 dev = [
