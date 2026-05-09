@@ -234,9 +234,10 @@ def test_second_run_hits_cache(tmp_path: Path) -> None:
 
 
 def test_moonlit_force_extract_re_extracts(tmp_path: Path) -> None:
+    original = "def main():\n    print('original')\n    return 0\n"
     pyz = make_test_pyz(
         tmp_path / "app.pyz",
-        user_modules={"myapp.py": "def main():\n    print('original')\n    return 0\n"},
+        user_modules={"myapp.py": original},
     )
     env = isolated_env(tmp_path)
 
@@ -244,24 +245,33 @@ def test_moonlit_force_extract_re_extracts(tmp_path: Path) -> None:
     code, _, _ = run_pyz(pyz, env=env)
     assert code == 0
 
-    # 2) Mutate the cached myapp.py to a different return value.
+    # 2) Mutate the cached myapp.py.
     cache = Path(env["MOONLIT_ROOT"])
     cached_files = list(cache.rglob("myapp.py"))
     assert len(cached_files) == 1, cached_files
     cached_main = cached_files[0]
-    cached_main.write_text("def main():\n    print('mutated')\n    return 99\n", encoding="utf-8")
+    mutated = "def main():\n    print('mutated')\n    return 99\n"
+    cached_main.write_text(mutated, encoding="utf-8")
 
-    # 3) Without FORCE_EXTRACT: cache hit, mutated content runs.
-    code, stdout, _ = run_pyz(pyz, env=env)
-    assert code == 99
-    assert "mutated" in stdout
+    # 3) Without FORCE_EXTRACT: cache hit, the bootstrap does NOT touch the
+    # cached source. We assert via file content rather than re-running the
+    # script: CPython's `.pyc` invalidation compares only second-resolution
+    # mtime + size (per importlib._bootstrap_external), so on a fast runner
+    # where the mutation lands in the same wall-clock second as the first
+    # run's `.pyc` AND the byte count is unchanged, Python serves the stale
+    # bytecode. That's a Python behavior, orthogonal to moonlit's contract.
+    run_pyz(pyz, env=env)
+    assert cached_main.read_text(encoding="utf-8") == mutated
 
-    # 4) With FORCE_EXTRACT: archive content is restored under the lock.
+    # 4) With FORCE_EXTRACT: re-extraction under the lock restores the
+    # archive's original source content (atomic_replace_dir wipes the old
+    # cache including any `__pycache__`, so the next import recompiles fresh).
     env_force = dict(env)
     env_force["MOONLIT_FORCE_EXTRACT"] = "1"
     code, stdout, _ = run_pyz(pyz, env=env_force)
     assert code == 0
     assert "original" in stdout
+    assert cached_main.read_text(encoding="utf-8") == original
 
 
 def test_moonlit_force_extract_zero_is_truthy(tmp_path: Path) -> None:
