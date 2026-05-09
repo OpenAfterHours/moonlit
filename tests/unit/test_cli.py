@@ -952,9 +952,7 @@ def test_info_zip_without_env_json_exit_12(call_cli: Any, tmp_path: Path) -> Non
     assert "env.json missing from archive" in stderr
 
 
-def test_info_malformed_env_json_exit_12_with_field_message(
-    call_cli: Any, tmp_path: Path
-) -> None:
+def test_info_malformed_env_json_exit_12_with_field_message(call_cli: Any, tmp_path: Path) -> None:
     bad = _valid_env_dict()
     bad["entry_point"] = "no_colon_here"
     pyz = _make_pyz_with_env(tmp_path / "x.pyz", env_bytes=_serialize_env(bad))

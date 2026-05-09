@@ -26,9 +26,8 @@ import click
 from . import __version__
 from ._bootstrap import environment as bootstrap_env
 from ._bootstrap.errors import EnvJsonError as _BootstrapEnvJsonError
-from .builder import BuildConfig
+from .builder import BuildConfig, humanize_bytes
 from .builder import build as run_build
-from .builder import humanize_bytes
 from .errors import (
     BadArchiveError,
     MalformedPyprojectError,
