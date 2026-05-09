@@ -181,15 +181,22 @@ h1.ml-h1 .ml-stroke {
               border-color 200ms var(--ease-std),
               color 200ms var(--ease-std);
 }
-.ml-btn-primary {
+/* :link / :visited explicit so global `a:visited` from colors_and_type.css
+   (specificity 0,1,1) does not win over the button color. */
+.ml-btn-primary,
+.ml-btn-primary:link,
+.ml-btn-primary:visited {
   background: var(--oah-orange);
   color: #fff;
 }
 .ml-btn-primary:hover {
   background: var(--oah-orange-bright);
+  color: #fff;
   box-shadow: 0 4px 16px rgba(255,145,0,0.35);
 }
-.ml-btn-ghost {
+.ml-btn-ghost,
+.ml-btn-ghost:link,
+.ml-btn-ghost:visited {
   background: transparent;
   color: var(--oah-slate-100);
   border: 1px solid rgba(216,222,233,0.20);
@@ -585,3 +592,118 @@ h1.ml-h1 .ml-stroke {
 .ml-spacer-sm { height: 8px; }
 .ml-spacer-md { height: 16px; }
 .ml-spacer-lg { height: 32px; }
+
+/* ============== RESPONSIVE ==============
+   The desktop layout is the canonical design. These rules scale it down
+   without changing the visual identity: hero columns collapse to a single
+   column, the crescent moon shrinks below the text, the feature shelf
+   reflows, and the top nav hides its text links in favor of the GitHub
+   pill on phones. */
+
+/* Tighten oversized desktop padding on laptops below ~1024px. */
+@media (max-width: 1024px) {
+  .ml-nav  { padding: 18px 32px; }
+  .ml-foot { padding: 18px 32px; }
+  .ml-hero { padding: 64px 40px 40px; }
+  h1.ml-h1 { font-size: 56px; }
+}
+
+/* Tablet — collapse the two-column hero. */
+@media (max-width: 860px) {
+  .ml-nav { padding: 16px 24px; }
+  .ml-nav-links { gap: 18px; font-size: 13px; }
+  .ml-brand-org { display: none; }
+
+  .ml-hero { padding: 48px 24px 36px; min-height: auto; }
+  .ml-hero-fg { max-width: 720px; }
+
+  h1.ml-h1 { font-size: 44px; }
+  .ml-lede { font-size: 16.5px; max-width: none; }
+
+  .ml-hero-a .ml-hero-grid {
+    grid-template-columns: 1fr;
+    gap: 0;
+    align-items: start;
+  }
+  /* Hide the big crescent below the desktop layout — it's a brand "wow"
+     element, but on a single-column hero it forces the user to scroll past
+     ~320px of decoration to reach the feature shelf. The brand mark in the
+     top-left nav still carries the moon metaphor. */
+  .ml-hero-a .ml-moon-stage { display: none; }
+
+  .ml-shelf {
+    grid-template-columns: repeat(2, 1fr);
+    gap: 12px;
+    margin-top: 28px;
+  }
+
+  .ml-foot { padding: 16px 24px; }
+}
+
+/* Narrow tablet / phablet — single-column shelf, smaller display type. */
+@media (max-width: 600px) {
+  .ml-shelf { grid-template-columns: 1fr; }
+  h1.ml-h1 { font-size: 38px; }
+}
+
+/* Phone — compact nav, stacked CTAs, smallest hero footprint. */
+@media (max-width: 480px) {
+  .ml-nav { padding: 14px 18px; }
+  .ml-nav-links { gap: 0; }
+  /* Drop text links, keep only the GitHub pill so the nav doesn't wrap. */
+  .ml-nav-links a:not(.ml-nav-cta) { display: none; }
+
+  .ml-hero { padding: 36px 18px 28px; }
+  .ml-hero-fg { max-width: 100%; }
+
+  .ml-eyebrow {
+    font-size: 10px;
+    letter-spacing: 0.16em;
+    margin-bottom: 14px;
+  }
+  .ml-status {
+    font-size: 10px;
+    margin-bottom: 14px;
+  }
+
+  h1.ml-h1 {
+    font-size: 34px;
+    line-height: 1.06;
+    letter-spacing: -0.03em;
+    margin-bottom: 18px;
+  }
+  .ml-lede {
+    font-size: 16px;
+    margin-bottom: 24px;
+  }
+
+  /* Stack CTAs full-width so the install line and buttons don't fight for
+     space on a single row. */
+  .ml-cta-row {
+    gap: 10px;
+    flex-direction: column;
+    align-items: stretch;
+    margin-bottom: 28px;
+  }
+  .ml-cta-row > * { width: 100%; }
+  .ml-install { justify-content: flex-start; }
+  .ml-btn { justify-content: center; }
+
+  .ml-hero-a .ml-moon-stage { max-width: 260px; }
+
+  /* Decorative glyphs cluster too densely at this width — fade them so they
+     stay atmosphere, not noise. */
+  .ml-glyph-bg { opacity: 0.55; }
+
+  /* Stack footer (org + links columns) so neither column collides. */
+  .ml-foot {
+    padding: 18px;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 12px;
+  }
+  .ml-foot a {
+    margin-left: 0;
+    margin-right: 16px;
+  }
+}
