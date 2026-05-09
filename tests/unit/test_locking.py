@@ -1,11 +1,18 @@
 """Pin _bootstrap/locking to specs/03-bootstrap-runtime.md §5 and D13.
 
+D13 mandates OS-managed advisory locks: fcntl.flock on POSIX,
+msvcrt.locking on Windows. The kernel releases the lock on process death,
+so the lock file at <cache_root>/<cache_key>.lock persists across releases.
+
 NB on test mode: same caveat as test_environment.py — these unit tests
 exercise the locking primitives via direct import as a development-time TDD
-harness; the e2e suite (built once the full bootstrap exists) is the contract.
+harness; the e2e suite is the contract.
 """
 
 import os
+import subprocess
+import sys
+import textwrap
 import threading
 import time
 from pathlib import Path
@@ -25,43 +32,33 @@ def test_acquire_returns_int_fd_and_creates_file(tmp_path: Path) -> None:
         assert isinstance(fd, int)
         assert fd >= 0
         assert lock_path.exists()
-        # FD is real and refers to the lock file (zero size).
         assert os.fstat(fd).st_size == 0
     finally:
         locking.release(fd, lock_path)
 
 
-def test_release_closes_fd_and_unlinks_file(tmp_path: Path) -> None:
+def test_release_closes_fd_but_keeps_lock_file(tmp_path: Path) -> None:
+    # D13 (post-v0.2): the lock file persists across releases. Unlinking it
+    # would race against a concurrent opener since flock is per open file
+    # description.
     lock_path = tmp_path / "x.lock"
     fd = locking.acquire(lock_path)
     locking.release(fd, lock_path)
-    assert not lock_path.exists()
+    assert lock_path.exists()
+    assert lock_path.stat().st_size == 0
     with pytest.raises(OSError):
         os.fstat(fd)
 
 
-def test_release_tolerates_missing_lock_file(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    # Spec §5: release catches FileNotFoundError on unlink (stale-lock recovery).
-    # Simulated via monkeypatch because the real-fs scenario (rm a file held
-    # open by an fd) is POSIX-only — Windows refuses with PermissionError.
-    lock_path = tmp_path / "x.lock"
-    fd = locking.acquire(lock_path)
-
-    def fake_unlink(path: object) -> None:
-        raise FileNotFoundError(2, "No such file", str(path))
-
-    monkeypatch.setattr(os, "unlink", fake_unlink)
-    locking.release(fd, lock_path)  # must not raise
-
-
-def test_acquire_after_release_succeeds(tmp_path: Path) -> None:
+def test_acquire_after_release_succeeds_with_persistent_lockfile(tmp_path: Path) -> None:
+    # The lock file is reused across acquire/release cycles.
     lock_path = tmp_path / "x.lock"
     fd1 = locking.acquire(lock_path)
     locking.release(fd1, lock_path)
+    assert lock_path.exists()
     fd2 = locking.acquire(lock_path)
     locking.release(fd2, lock_path)
+    assert lock_path.exists()
 
 
 # ---------- contention / timeout ----------
@@ -79,6 +76,37 @@ def test_acquire_contended_times_out(tmp_path: Path, monkeypatch: pytest.MonkeyP
         assert "0.1s" in msg
         assert str(lock_path) in msg
         assert "MOONLIT_FORCE_EXTRACT" in msg
+    finally:
+        locking.release(held_fd, lock_path)
+
+
+def test_acquire_failure_does_not_leak_fd(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # If acquisition times out, the fd opened on lock_path is closed before
+    # raising. Otherwise we'd leak fds across repeated misses.
+    monkeypatch.setattr(locking, "_TIMEOUT_S", 0.05)
+    lock_path = tmp_path / "x.lock"
+    held_fd = locking.acquire(lock_path)
+    try:
+        opened_for_lock: list[int] = []
+        real_open = os.open
+        target = str(lock_path)
+
+        def tracking_open(path: object, *args: object, **kwargs: object) -> int:
+            fd = real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+            if str(path) == target:
+                opened_for_lock.append(fd)
+            return fd
+
+        monkeypatch.setattr(locking.os, "open", tracking_open)
+        with pytest.raises(LockTimeoutError):
+            locking.acquire(lock_path)
+        # Exactly one fd was opened on lock_path during the failed acquisition,
+        # and the failure path must have closed it.
+        assert len(opened_for_lock) == 1
+        with pytest.raises(OSError):
+            os.fstat(opened_for_lock[0])
     finally:
         locking.release(held_fd, lock_path)
 
@@ -141,25 +169,25 @@ def test_contended_acquire_sleeps_at_poll_interval(
         locking.release(held_fd, lock_path)
 
 
-def test_acquire_retries_until_lock_disappears(
+def test_acquire_retries_until_holder_releases(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     # If a holder releases mid-poll, the waiter wins on the next attempt.
     monkeypatch.setattr(locking, "_TIMEOUT_S", 5.0)
     monkeypatch.setattr(locking, "_POLL_INTERVAL_S", 0.005)
     lock_path = tmp_path / "x.lock"
-    lock_path.touch()  # pre-existing, simulating an external holder
+    held_fd = locking.acquire(lock_path)
 
-    def remove_after_delay() -> None:
+    def release_after_delay() -> None:
         time.sleep(0.05)
-        lock_path.unlink()
+        locking.release(held_fd, lock_path)
 
-    t = threading.Thread(target=remove_after_delay)
+    t = threading.Thread(target=release_after_delay)
     t.start()
     fd = locking.acquire(lock_path)
     t.join()
     try:
-        assert lock_path.exists()
+        assert lock_path.exists()  # file persists
     finally:
         locking.release(fd, lock_path)
 
@@ -172,7 +200,7 @@ def test_lock_context_manager_yields_fd(tmp_path: Path) -> None:
     with locking.lock(lock_path) as fd:
         assert isinstance(fd, int)
         assert lock_path.exists()
-    assert not lock_path.exists()
+    assert lock_path.exists()  # file persists after release
 
 
 def test_lock_releases_on_exception(tmp_path: Path) -> None:
@@ -180,7 +208,9 @@ def test_lock_releases_on_exception(tmp_path: Path) -> None:
     with pytest.raises(RuntimeError, match="boom"):
         with locking.lock(lock_path):
             raise RuntimeError("boom")
-    assert not lock_path.exists()
+    # After the body raised, the lock must have been released — re-acquire to confirm.
+    fd = locking.acquire(lock_path)
+    locking.release(fd, lock_path)
 
 
 def test_lock_propagates_timeout_error(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
@@ -193,3 +223,54 @@ def test_lock_propagates_timeout_error(tmp_path: Path, monkeypatch: pytest.Monke
                 pytest.fail("body must not run when acquire times out")  # pragma: no cover
     finally:
         locking.release(held_fd, lock_path)
+
+
+# ---------- cross-process: kernel releases on crash ----------
+
+
+def test_lock_released_when_holder_process_is_killed(tmp_path: Path) -> None:
+    # The headline win of OS-managed locking over the old O_CREAT|O_EXCL
+    # sentinel: a holder that gets SIGKILLed (or TerminateProcessed) does NOT
+    # leave the cache permanently jammed. The kernel releases the lock at
+    # process exit; the next acquirer succeeds promptly.
+    lock_path = tmp_path / "x.lock"
+    src_root = Path(__file__).resolve().parents[2] / "src"
+    holder_script = textwrap.dedent(
+        f"""
+        import sys
+        sys.path.insert(0, {str(src_root)!r})
+        from moonlit._bootstrap import locking
+        fd = locking.acquire({str(lock_path)!r})
+        print("LOCKED", flush=True)
+        import time
+        time.sleep(60)
+        """
+    )
+    proc = subprocess.Popen(
+        [sys.executable, "-c", holder_script],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    try:
+        # Wait for the child to confirm it holds the lock.
+        assert proc.stdout is not None
+        line = proc.stdout.readline()
+        assert line.strip() == "LOCKED", f"holder did not lock: {line!r}"
+        proc.kill()
+        proc.wait(timeout=5)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+            proc.wait(timeout=5)
+    # After the holder is dead, we must be able to acquire promptly.
+    deadline = time.monotonic() + 5.0
+    while time.monotonic() < deadline:
+        try:
+            fd = locking.acquire(lock_path)
+            locking.release(fd, lock_path)
+            break
+        except LockTimeoutError:  # pragma: no cover - retry until the OS reaps
+            time.sleep(0.05)
+    else:  # pragma: no cover
+        pytest.fail("kernel did not release the lock after holder was killed")

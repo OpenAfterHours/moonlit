@@ -74,30 +74,53 @@ The slow path is the only mutator. Under the lock, the writer re-checks the same
 
 ## 5. Lock protocol (D13)
 
+OS-managed advisory locking. The lock file at `<cache_root>/<cache_key>.lock` is opened (`O_CREAT | O_RDWR`, no `O_EXCL`); exclusivity comes from `fcntl.flock` on POSIX and `msvcrt.locking` on Windows. The kernel releases the lock on process death, so crashed processes do not leave the cache permanently jammed.
+
 ```python
-flags = os.O_CREAT | os.O_EXCL | os.O_RDWR
+fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
 deadline = time.monotonic() + 60.0
-while True:
-    try:
-        fd = os.open(lock_path, flags, 0o600)
-        break
-    except FileExistsError:
+try:
+    while True:
+        if _try_lock(fd):  # platform dispatch; see below
+            break
         if time.monotonic() >= deadline:
+            os.close(fd)
             raise LockTimeout(lock_path)
         time.sleep(0.050)
-try:
-    ...  # critical section
-finally:
-    os.close(fd)
     try:
-        os.unlink(lock_path)
-    except FileNotFoundError:
-        pass
+        ...  # critical section
+    finally:
+        os.close(fd)  # closing the fd releases the OS lock
+except BaseException:
+    os.close(fd)  # propagate after closing on rare error paths during acquisition
+    raise
+```
+
+`_try_lock(fd)` is platform-dispatched:
+
+```python
+# POSIX
+def _try_lock(fd):
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        return True
+    except BlockingIOError:
+        return False
+
+# Windows
+def _try_lock(fd):
+    try:
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        return True
+    except OSError as exc:
+        if exc.errno in (errno.EACCES, errno.EAGAIN, errno.EDEADLK):
+            return False
+        raise
 ```
 
 - First attempt has no preceding sleep; the 50 ms sleep is between retries only.
-- Timeout message: `"moonlit: lock acquisition timed out (60s) at <lock_path>; remove this file or set MOONLIT_FORCE_EXTRACT=1"`. Exit 3.
-- Stale-lock recovery is manual: `rm <lock_path>`. A real `flock`/`msvcrt.LK_NBLCK` implementation is deferred to v0.2.
+- Timeout message: `"moonlit: lock acquisition timed out (60s) at <lock_path>; remove this file or set MOONLIT_FORCE_EXTRACT=1"`. Exit 3. The "remove this file" hint remains as a safety net even though the kernel now releases on crash — it costs nothing and helps users with frozen-but-alive holders (debugger pauses, deep AV scans).
+- The lock file is NOT unlinked on release. Unlinking would race against a concurrent opener: the unlinker's flock is on the open file description, and a new `os.open(lock_path)` after the unlink creates a fresh inode whose lock is unrelated.
 
 ## 6. Extraction protocol (D1, D4)
 
@@ -191,9 +214,11 @@ The bootstrap MUST import only from the Python 3.13 standard library. Allowed mo
 | `shutil` | `shutil.rmtree` for tmp / `.old.<pid>` cleanup |
 | `traceback` | `MOONLIT_DEBUG` traceback printing |
 | `re` | cache-key normalization (D5) |
-| `errno` | distinguishing `EEXIST`, `ENOTEMPTY`, `EACCES` in extract / replace error paths |
+| `errno` | distinguishing `EEXIST`, `ENOTEMPTY`, `EACCES` in extract / replace error paths; classifying lock-held errnos on Windows |
 | `dataclasses` | `Environment` dataclass |
 | `posixpath` | `posixpath.normpath` for arcname `..` rejection |
+| `fcntl` | `fcntl.flock(LOCK_EX \| LOCK_NB)` on POSIX (D13). Imported only on `os.name != "nt"`. |
+| `msvcrt` | `msvcrt.locking(LK_NBLCK, 1)` on Windows (D13). Imported only on `os.name == "nt"`. |
 
 Enforced by **`tests/unit/test_bootstrap_stdlib_only.py`** (D7), which AST-walks `src/moonlit/_bootstrap/`, collects every absolute import name, and asserts each is in `sys.stdlib_module_names`. The test runs in CI on every push. There is no runtime self-check; the test is the gate. A second test in the same file asserts that no module under `_bootstrap/` references `os.rename` outside of the documented D4 protocol.
 
@@ -204,7 +229,7 @@ Enforced by **`tests/unit/test_bootstrap_stdlib_only.py`** (D7), which AST-walks
 3. **`name` containing `..` or `/` in env.json** — env.json validation rejects per PEP 508 regex (D11); cache-key derivation also rejects, joint defense.
 4. **Two processes, same `(name, build_id)`, cold cache** — one wins the lock, extracts, releases; the other re-checks under the lock, sees populated `site_dir`, releases without extracting.
 5. **Filesystem case-insensitivity** — `MyApp` and `myapp` produce the same `cache_key` (lowercased per D5). By design.
-6. **SIGKILL during extraction** — `tmp_dir` and `lock_path` leak. Recovery: manual `rm`; or wait 60 s for the next process to time out and clean up. Documented.
+6. **SIGKILL during extraction** — `tmp_dir` leaks (cleaned by `_sweep_old_siblings` on the next bootstrap run for the same `cache_key`). The OS releases the lock automatically; the persistent `lock_path` file is reusable by the next holder.
 7. **AV/EDR holds DLL during `os.replace` on Windows** — 3-attempt retry with 100 ms backoff inside D4; persistent failure exits 1.
 8. **Disk full mid-extraction** — `tmp_dir` cleanup in `finally`; failure during cleanup is logged under `MOONLIT_DEBUG`, otherwise silent.
 9. **Symlinks in the archive** — POSIX recreates as symlinks; Windows resolves and writes as regular file.

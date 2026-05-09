@@ -98,10 +98,11 @@ Stale `.<cache_key>.old.<pid>/` siblings are opportunistically swept on the next
 ## 9. Locking semantics (D13, D14)
 
 - Lock path: `<cache_root>/<cache_key>.lock` (sibling, NOT inside the cache dir).
-- Acquired via `os.open(lock_path, O_CREAT | O_EXCL | O_RDWR)` in a poll loop (`LOCK_POLL_INTERVAL`, `LOCK_TIMEOUT`). Released by `os.close(fd); os.unlink(lock_path)` in `finally`.
+- Opened via `os.open(lock_path, O_CREAT | O_RDWR, 0o600)`. Exclusion is OS-managed: `fcntl.flock(LOCK_EX | LOCK_NB)` on POSIX, `msvcrt.locking(LK_NBLCK, 1)` on Windows. Both are non-blocking; the poll loop drives retries (`LOCK_POLL_INTERVAL`, `LOCK_TIMEOUT`). Released by closing the fd; the kernel releases the lock on process death.
+- The lock file persists across releases. Unlinking would race against a concurrent opener: the OS lock is per open file description, and a `rm` followed by a fresh `os.open` produces a new inode whose lock is unrelated. The persistent file is small (zero bytes).
 - Cache-hit fast path (D14): readers that observe `<cache_key>/site-packages/` exists AND `MOONLIT_FORCE_EXTRACT` unset SKIP the lock entirely. Lock contention is bounded to first-extraction and forced re-extractions.
 - `MOONLIT_FORCE_EXTRACT=1` does NOT bypass the lock; it only skips the existence shortcut after the lock is held.
-- Stale-lock recovery is manual: `rm <cache_root>/<cache_key>.lock`. Real OS-managed locks (`flock`, `msvcrt.LK_NBLCK`) are v0.2.
+- Stale-lock recovery for crashed processes is automatic — the kernel releases the lock when the process exits. Live contention still surfaces as exit code 3 after the 60 s timeout. Manually `rm <cache_root>/<cache_key>.lock` is harmless and remains a safety net.
 
 ## 10. Concurrency invariants
 
@@ -117,7 +118,7 @@ Stale `.<cache_key>.old.<pid>/` siblings are opportunistically swept on the next
 | `<cache_key>/` | No `.pyz` with this key is currently running; next run will re-extract. |
 | `.<cache_key>.tmp.<pid>/` | The owning `<pid>` is not alive. (Liveness check is racy across pid reuse; in MVP, treat all tempdirs as deletable when the user is sure no `moonlit`-extracting process is active.) |
 | `.<cache_key>.old.<pid>/` | Same as `.tmp.<pid>` — pid not alive. |
-| `<cache_key>.lock` | No process holds it (manual recovery per D13). |
+| `<cache_key>.lock` | At any time when no process currently holds the OS lock; the kernel releases the lock on process death and the file is harmless to leave in place. |
 | `<cache_key>/site-packages/**/__pycache__/` | At any time; CPython will regenerate. |
 | `<cache_key>/` while a `.pyz` of that key runs | NEVER. |
 | `.<cache_key>.tmp.<pid>/` mid-extraction | NEVER. |
@@ -128,13 +129,13 @@ No GC in MVP; every distinct `<cache_key>` consumes one staged-site-packages wor
 
 ## 13. Edge cases
 
-1. Network FS: `O_CREAT|O_EXCL` is weaker on NFS<v4; cooperative locking only.
+1. Network FS: `fcntl.flock` semantics on NFS<v4 (and on some SMB shares) are weaker than local; the lock degrades to advisory cooperation. Recommendation: keep `MOONLIT_ROOT` on a local filesystem.
 2. Read-only FS: extraction fails; bootstrap exits with the runtime generic error.
 3. User deletes `site-packages/` mid-execution: behavior undefined (loaded modules survive in memory; new imports fail).
 4. Distinct names sharing a `build_id`: distinct cache entries (full key includes name).
 5. Same `<cache_key>` from a different bootstrap version: cache hit. The bootstrap that runs is whatever was baked into the `.pyz`; bootstrap version is not part of the key.
 6. Stale `.tmp.<pid>` from a SIGKILL'd extractor: leaks until manual cleanup; v0.2 GC.
-7. Stale lock: 60 s timeout then bootstrap exit code 3; manual recovery via `rm <cache_root>/<cache_key>.lock`.
+7. Stale lock: only possible from a still-live but stuck holder (debugger pause, deep AV scan). 60 s timeout then bootstrap exit code 3. Crashed holders no longer wedge the cache — the kernel releases their lock at process exit.
 8. Antivirus interference on Windows holding handles during `os.replace`: best-effort retry inside `atomic_replace_dir` (documented limitation).
 9. Disk-full mid-extract: tempdir abandoned, lock released in `finally`; user retries with `MOONLIT_FORCE_EXTRACT=1`.
 10. Cross-user shared FS: umask of the first extractor governs others' read access; not supported in MVP.

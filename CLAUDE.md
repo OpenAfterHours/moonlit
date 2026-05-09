@@ -94,7 +94,7 @@ If you find yourself jumping up the file to understand a downstream function, th
 - **`--reinstall-package <name>`** in step 6 — defensive against future changes to `uv export` semantics.
 - **Cache root on Windows is `%LOCALAPPDATA%\moonlit`**, not `~/.moonlit`. Roaming profiles must not bloat.
 - **`os.replace()` for atomic rename** — works on both POSIX and Windows since Python 3.3. Don't use `os.rename()` (Windows fails if the target exists).
-- **Locking is `O_CREAT|O_EXCL` sentinels**, not `fcntl` (POSIX-only) or `msvcrt.locking` (Windows byte-range, different semantics). Documented limitation: stale lock on crash, recovered via `MOONLIT_FORCE_EXTRACT=1`.
+- **Locking is OS-managed**: `fcntl.flock(LOCK_EX | LOCK_NB)` on POSIX, `msvcrt.locking(LK_NBLCK, 1)` on Windows, both dispatched from `_bootstrap/locking.py`. The lock file at `<cache_root>/<cache_key>.lock` is opened with `O_CREAT | O_RDWR` (no `O_EXCL`) and persists across releases — closing the fd releases the OS lock; the kernel releases it on process death. Do NOT add `os.unlink(lock_path)` to the release path: it would race a concurrent opener since `flock` is per open file description.
 
 ## Environment variables (runtime, read by bootstrap)
 
@@ -161,7 +161,6 @@ The following are intentionally deferred from the MVP. If a task touches one of 
 - `--site-packages` extra-dirs flag
 - `moonlit info <pyz>` subcommand
 - `--windows-exe` launcher (distlib-style native .exe wrapping)
-- Real `fcntl.flock` / `msvcrt.LK_NBLCK` locking (replacement for the sentinel approach)
 - Cross-interpreter builds (`--python-version` / `--platform` pass-through to uv)
 
 ## Platform note
