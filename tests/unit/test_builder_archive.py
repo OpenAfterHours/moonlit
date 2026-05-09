@@ -426,7 +426,7 @@ def test_success_line_entry_count_matches_zip(
     assert int(match.group(1)) == actual
 
 
-# ---------- _humanize_bytes ----------
+# ---------- humanize_bytes ----------
 
 
 @pytest.mark.parametrize(
@@ -443,7 +443,7 @@ def test_success_line_entry_count_matches_zip(
     ],
 )
 def test_humanize_bytes_examples(n: int, expected: str) -> None:
-    assert builder._humanize_bytes(n) == expected
+    assert builder.humanize_bytes(n) == expected
 
 
 # ---------- end-to-end entry composition ----------
