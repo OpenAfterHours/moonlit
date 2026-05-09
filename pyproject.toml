@@ -1,6 +1,6 @@
 [project]
 name = "moonlit"
-version = "0.1.3"
+version = "0.1.4"
 description = "uv-powered Python zipapp builder."
 readme = "README.md"
 license = "MIT"
