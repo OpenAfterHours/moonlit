@@ -10,3 +10,6 @@ build/
 # zensical docs site build output
 site/
 .zensical/
+
+# Rust launcher crate build output (Cargo.lock is committed — it's a binary crate)
+launcher/target/
