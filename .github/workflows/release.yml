@@ -1,0 +1,133 @@
+name: Release to PyPI
+
+# Triggered when a vX.Y.Z tag is pushed (typically by `scripts/release.py`,
+# which builds the tag locally; the maintainer pushes it with `git push origin
+# vX.Y.Z`). The workflow verifies the tag matches the pyproject version, runs
+# the test suite, builds sdist + wheel, publishes to PyPI via OIDC Trusted
+# Publishing (no API token needed), and creates a GitHub Release with auto-
+# generated notes and the artifacts attached.
+#
+# One-time setup required for OIDC publishing to work:
+#   1. https://pypi.org/manage/project/moonlit/settings/publishing/
+#      Add a trusted publisher:
+#        Owner:           OpenAfterHours
+#        Repository:      moonlit
+#        Workflow:        release.yml
+#        Environment:     pypi
+#   2. In this GitHub repo: Settings → Environments → New environment "pypi".
+#      Optionally add required reviewers, a wait timer, or branch/tag rules
+#      for an extra manual gate before publish.
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+
+# Don't run two releases for the same tag concurrently.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build sdist + wheel
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+          cache-dependency-glob: |
+            uv.lock
+            pyproject.toml
+
+      - name: Sync project + dev dependencies
+        run: uv sync --group dev
+
+      - name: Verify tag matches pyproject version
+        # Defends against a tag that drifted from pyproject.toml — a release
+        # cut without scripts/release.py could push a vX.Y.Z tag while
+        # pyproject still says X.Y.(Z-1). Refuse to publish in that case.
+        run: |
+          set -euo pipefail
+          TAG_VERSION="${GITHUB_REF_NAME#v}"
+          PYPROJECT_VERSION=$(uv run python -c 'import tomllib,sys; print(tomllib.load(open("pyproject.toml","rb"))["project"]["version"])')
+          echo "tag version       : $TAG_VERSION"
+          echo "pyproject version : $PYPROJECT_VERSION"
+          if [ "$TAG_VERSION" != "$PYPROJECT_VERSION" ]; then
+            echo "::error::tag ${GITHUB_REF_NAME} does not match pyproject version (${PYPROJECT_VERSION}). Run scripts/release.py to bump correctly."
+            exit 1
+          fi
+
+      - name: Run pytest
+        run: uv run pytest
+
+      - name: Build sdist + wheel
+        run: uv build
+
+      - name: List built artifacts
+        run: ls -la dist/
+
+      - name: Upload dist/ as artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+          retention-days: 7
+          if-no-files-found: error
+
+  publish-pypi:
+    name: Publish to PyPI (Trusted Publisher / OIDC)
+    needs: build
+    runs-on: ubuntu-latest
+    # The named environment lets PyPI's trusted-publisher config require it,
+    # and lets you add a manual approval gate in the repo's environment
+    # settings without changing this file.
+    environment:
+      name: pypi
+      url: https://pypi.org/project/moonlit/
+    permissions:
+      # id-token: write is the ONLY permission this job needs — no
+      # contents/packages/etc. The OIDC token is exchanged for a short-lived
+      # PyPI upload credential by pypa/gh-action-pypi-publish.
+      id-token: write
+    steps:
+      - name: Download dist/ artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        # No `password:` argument — auth is via OIDC trusted publishing.
+
+  github-release:
+    name: Create GitHub Release
+    needs: publish-pypi
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write    # required by `gh release create`
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # gh release create --generate-notes walks commit history; needs
+          # the full clone, not the default shallow one.
+          fetch-depth: 0
+
+      - name: Download dist/ artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Create GitHub Release with auto-generated notes
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" \
+            --title "moonlit $GITHUB_REF_NAME" \
+            --generate-notes \
+            dist/*
