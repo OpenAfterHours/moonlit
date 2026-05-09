@@ -546,13 +546,30 @@ def test_windows_exe_shebang_immediately_follows_pe_image(
 
 
 def test_windows_exe_zip_body_matches_pyz_per_entry(
-    project_root: Path, tmp_path: Path, fake_resolver: dict
+    project_root: Path,
+    tmp_path: Path,
+    fake_resolver: dict,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     # Invariant I11: a .pyz and the .exe built from the same project share
     # the same set of zip entries with the same content bytes. Byte-identical
     # zip bodies are NOT a contract today — zipfile embeds mtimes and our
     # builds happen at different wall-clock instants. Once `--reproducible`
     # lands, I11 can tighten to byte-identity.
+    #
+    # `built_at` uses second-resolution `datetime.now(UTC)`, so two
+    # back-to-back builds can land in different seconds and produce
+    # divergent env.json content. Freeze the clock for the duration of this
+    # test so the per-entry comparison is deterministic.
+    from datetime import datetime as _real_datetime
+
+    class _FrozenDatetime(_real_datetime):
+        @classmethod
+        def now(cls, tz=None):  # type: ignore[override]
+            return _real_datetime(2026, 5, 9, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr(builder, "datetime", _FrozenDatetime)
+
     fake_resolver["stage_files"] = {
         "mypkg/__init__.py": b"# mypkg\n",
         "mypkg/cli.py": b"def main():\n    return 0\n",
