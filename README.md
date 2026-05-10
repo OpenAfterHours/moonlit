@@ -50,7 +50,28 @@ uv run moonlit build --package shouter -e shouter.cli:main -o shouter.pyz
 python ./shouter.pyz
 ```
 
-The produced `.pyz` is self-contained: `uv.lock`'s entire dependency closure is bundled, plus the target's own wheel. On first run it extracts `site-packages/` to a per-build cache (`%LOCALAPPDATA%\moonlit` on Windows, `~/.moonlit` on POSIX); subsequent runs hit the cache directly without unpacking.
+The produced `.pyz` is self-contained in the dependency sense: `uv.lock`'s entire dependency closure is bundled, plus the target's own wheel. On first run it extracts `site-packages/` to a per-build cache (`%LOCALAPPDATA%\moonlit` on Windows, `~/.moonlit` on POSIX); subsequent runs hit the cache directly without unpacking. Like [shiv](https://github.com/linkedin/shiv), the `.pyz`/`.exe` does **not** bundle the Python interpreter itself — recipients still need a Python on `PATH` (or a `py.exe`-discoverable install on Windows) whose `major.minor` matches the build's target ABI. See [Cross-interpreter builds](#cross-interpreter-builds) for how to control that target.
+
+### Cross-interpreter builds
+
+Native-extension wheels (e.g. `msgspec`, `numpy`, `pydantic-core`) carry `cp<X><Y>` ABI tags and only load on the matching Python `major.minor`. By default `moonlit build` targets the build host's interpreter; pass `--python-version <X.Y>` to target a different one — useful when the dev box runs a different Python than the recipients:
+
+```sh
+# Build for Python 3.12 from a Python 3.13 dev box.
+# uv auto-fetches a managed standalone CPython 3.12 if one isn't installed.
+uv run moonlit build --python-version 3.12 -e myapp:main -o myapp-py312.pyz
+```
+
+The flag threads through every `uv` invocation (`export`, `pip install --target`, `build`) and is stamped into `env.json.python_version`. At runtime the bootstrap compares this against the recipient's `sys.version_info.major.minor` and exits 1 with a clear message on mismatch (no more cryptic `ModuleNotFoundError: No module named '<pkg>._core'`):
+
+```
+moonlit: this archive was built for Python 3.12, but you are running Python 3.13;
+install a Python 3.12 interpreter or rebuild with `moonlit build --python <python-3.12>`
+```
+
+For `--windows-exe` builds, combining `--python-version <X.Y>` with the default shebang automatically pivots the launcher's interpreter selection to `py -<X.Y>` so the Windows PEP 397 launcher pins to the matching Python on the recipient's machine. Pass `--python` explicitly to override.
+
+Multi-version-in-one-artifact (one `.pyz` that runs on multiple Pythons) is **not** supported; build one artifact per target version.
 
 ### Build output
 
@@ -117,7 +138,7 @@ specs/                  # Foundational design contracts (start here for hacking)
 overrides/home.html     # Standalone landing template (docs homepage)
 scripts/release.py      # Version-bump + tag helper (run before publishing)
 tests/
-├── unit/               # 479 unit tests
+├── unit/               # 556 unit tests
 └── e2e/                # 25 contract tests via subprocess
 ```
 
@@ -132,20 +153,24 @@ tests/
 | First-run extraction + cache-hit fast path | done |
 | Cross-platform caching (`%LOCALAPPDATA%`, `~/.moonlit`) | done |
 | `MOONLIT_ROOT`, `MOONLIT_FORCE_EXTRACT`, `MOONLIT_ENTRY_POINT`, `MOONLIT_DEBUG` | done |
-| `--reproducible` builds (zeroed mtimes, sorted entries) | deferred to v0.2 |
-| `--compile-pyc` | deferred to v0.2 |
-| `--no-modify` integrity verification | deferred to v0.2 |
-| `--windows-exe` native launcher | deferred to v0.2 |
-| Real `flock`/`msvcrt` locking | deferred to v0.2 |
-| `moonlit info <pyz>` subcommand | deferred to v0.2 |
+| `--windows-exe` native launcher | done |
+| Real `flock`/`msvcrt` locking | done |
+| `moonlit info <pyz>` subcommand | done |
+| `--python-version` cross-interpreter builds | done |
+| Bootstrap Python-version mismatch check (clear error vs cryptic `ModuleNotFoundError`) | done |
+| `--reproducible` builds (zeroed mtimes, sorted entries) | deferred |
+| `--compile-pyc` | deferred |
+| `--no-modify` integrity verification | deferred |
+| `--python-platform` (cross-OS / cross-arch builds) | deferred |
+| Multi-version-in-one-artifact (single `.pyz` that runs on multiple Pythons) | deferred |
 
 ## Contributing
 
 Read [`CLAUDE.md`](CLAUDE.md) for development conventions and [`specs/`](specs/) for the design contracts (start with `specs/README.md`, then `specs/00-architecture.md`).
 
 ```sh
-uv run pytest                       # 504 tests, ~11s with e2e
-uv run pytest tests/unit            # unit only, ~5s
+uv run pytest                       # 581 tests, ~11s with e2e
+uv run pytest tests/unit            # unit only, ~6s
 uv run ruff format --check .        # format check (CI gate)
 uv run ruff check .                 # lints (CI gate)
 uv run zensical build --strict      # docs build (CI gate)
