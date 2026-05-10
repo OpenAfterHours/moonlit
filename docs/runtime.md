@@ -22,12 +22,13 @@ The bootstrap then:
 
 1. Resolves the archive path via `os.path.abspath(sys.argv[0])`.
 2. Reads and validates `env.json`.
-3. Computes a cache key from the `[project].name` and the build_id.
-4. Resolves the cache root (see below).
-5. Either takes the **fast path** (cache hit, no lock) or the **slow path** (acquire lock, extract to tempdir, atomically install, release lock).
-6. Calls `site.addsitedir(<cache>/<key>/site-packages)` so the staged tree reaches `sys.path` and `.pth` files are processed.
-7. Resolves the entry point string (or its `MOONLIT_ENTRY_POINT` override), imports the module, walks the attribute path, calls `obj()`.
-8. Coerces the return value: `None` → 0, `int` → masked `& 0xFF`, otherwise `int(result) & 0xFF` (or exit 2 if uncoercible).
+3. **Python version check.** If `env.json.python_version` is present, compare it against `f"{sys.version_info.major}.{sys.version_info.minor}"`. On mismatch, exit 1 with a `moonlit: this archive was built for Python X.Y, but you are running Python A.B …` line — see [Python version check](#python-version-check).
+4. Computes a cache key from the `[project].name` and the build_id.
+5. Resolves the cache root (see below).
+6. Either takes the **fast path** (cache hit, no lock) or the **slow path** (acquire lock, extract to tempdir, atomically install, release lock).
+7. Calls `site.addsitedir(<cache>/<key>/site-packages)` so the staged tree reaches `sys.path` and `.pth` files are processed.
+8. Resolves the entry point string (or its `MOONLIT_ENTRY_POINT` override), imports the module, walks the attribute path, calls `obj()`.
+9. Coerces the return value: `None` → 0, `int` → masked `& 0xFF`, otherwise `int(result) & 0xFF` (or exit 2 if uncoercible).
 
 ## Cache layout
 
@@ -116,7 +117,7 @@ The runtime exit-code namespace is **independent** from the build-time CLI's. Di
 | Code | Meaning |
 |---|---|
 | 0 | Success (entry point returned `None`, an `int` in `[0, 255]`, or anything coercible to one). |
-| 1 | Generic bootstrap-internal error: `env.json` missing or fails validation, archive unreadable, extraction I/O failure, `_bootstrap` collision in the staged tree, empty `sys.argv[0]`. |
+| 1 | Generic bootstrap-internal error: `env.json` missing or fails validation, archive unreadable, extraction I/O failure, `_bootstrap` collision in the staged tree, empty `sys.argv[0]`, runtime Python's `major.minor` differs from `env.json.python_version`. |
 | 2 | Entry-point resolution or return-value coercion failure: malformed entry point, module not importable, attribute not found on module, return value can't be coerced to an `int`. |
 | 3 | Lock acquisition timed out (60 seconds). |
 
@@ -146,6 +147,19 @@ MOONLIT_FORCE_EXTRACT=1 python ./app.pyz
 
 `MOONLIT_FORCE_EXTRACT=1` does **not** bypass the lock; it only suppresses the existence-skip after the lock is acquired. Two concurrent forced runs serialize correctly: the second sees the first's installed tree, replaces it via the atomic protocol, and the first reader is unaffected because it already holds an open `addsitedir` reference.
 
+## Python version check
+
+Native-extension wheels (`.pyd` on Windows, `.so` elsewhere) are tagged with a `cp<X><Y>` ABI tag. Python's import machinery silently skips files whose tag doesn't match the running interpreter, surfacing as `ModuleNotFoundError: No module named '<pkg>._core'` rather than a clear "wrong Python" error. To turn that confusing failure into an actionable one, `moonlit build` stamps the target Python's `major.minor` into `env.json.python_version`, and the bootstrap rejects any mismatch up-front:
+
+```
+moonlit: this archive was built for Python 3.12, but you are running Python 3.13;
+install a Python 3.12 interpreter or rebuild with `moonlit build --python <python-3.12>`
+```
+
+This check fires **before** cache resolution and extraction, so a wrong-Python invocation never touches the cache. By default the stamped value is the build host's `sys.version_info.major.minor`; pass `--python-version <X.Y>` to `moonlit build` to target a different ABI (cross-interpreter builds — see [CLI reference](cli-reference.md) and [Getting started → Cross-interpreter builds](getting-started.md#cross-interpreter-builds)).
+
+Archives produced by older `moonlit` versions that predate this field omit `python_version`; the bootstrap skips the check in that case (forward-compatible — older `.pyz` files keep working under newer bootstraps and vice versa).
+
 ## Threat model
 
 `env.json` is **not authenticated**. A modified `.pyz` could ship a forged `env.json` and the bootstrap would trust it. Integrity verification is the `--no-modify` feature deferred to v0.2. The bootstrap does not auto-execute privileged behavior keyed solely on `name`.
@@ -159,11 +173,12 @@ For reference; the `env.json` produced by `moonlit build` looks like:
   "build_id": "<64 hex chars>",
   "built_at": "2026-05-09T15:23:01Z",
   "entry_point": "myapp.cli:main",
-  "moonlit_version": "0.1.0",
+  "moonlit_version": "0.2.0",
   "name": "myapp",
   "python_shebang": "/usr/bin/env python3",
+  "python_version": "3.13",
   "schema_version": 1
 }
 ```
 
-Validation is ordered (the first failure decides the error message): existence in archive, UTF-8 decode, JSON parse, top-level dict, `schema_version` is an integer (not bool) equal to `1`, all required fields present, types correct, format checks (PEP 508 name regex, lowercase 64-hex `build_id`, `module:attr` entry point, `%Y-%m-%dT%H:%M:%SZ` `built_at`, non-empty `moonlit_version`, non-empty `python_shebang` with no embedded newline and no leading `#!`).
+Validation is ordered (the first failure decides the error message): existence in archive, UTF-8 decode, JSON parse, top-level dict, `schema_version` is an integer (not bool) equal to `1`, all required fields present, types correct, format checks (PEP 508 name regex, lowercase 64-hex `build_id`, `module:attr` entry point, `%Y-%m-%dT%H:%M:%SZ` `built_at`, non-empty `moonlit_version`, non-empty `python_shebang` with no embedded newline and no leading `#!`). The optional `python_version` field, when present, must match `^\d+\.\d+$` (`major.minor` only); when absent the runtime version check is skipped — see [Python version check](#python-version-check).

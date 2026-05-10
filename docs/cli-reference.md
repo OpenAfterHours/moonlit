@@ -31,11 +31,13 @@ moonlit build [PROJECT] -e <entry> | -c <script> -o <output> [flags]
 |---|---|---|---|---|---|
 | `-e` | `--entry-point` | `module:callable` | one-of `{-e, -c}` | — | Entry point string baked into `env.json`. |
 | `-c` | `--console-script` | string | one-of `{-e, -c}` | — | Console-script name; resolved against staged `*.dist-info/entry_points.txt`. |
-| `-o` | `--output-file` | path | yes | — | Destination `.pyz`. |
-| `-p` | `--python` | string | no | `/usr/bin/env python3` | Shebang line baked into `env.json` and prefixed to the `.pyz`. ASCII only, no `\n`/`\r`/`\x00`, ≤127 bytes. |
+| `-o` | `--output-file` | path | yes | — | Destination `.pyz` (or `.exe` with `--windows-exe`). |
+| `-p` | `--python` | string | no | `/usr/bin/env python3` | Shebang line baked into `env.json` and prefixed to the artifact. ASCII only, no `\n`/`\r`/`\x00`, ≤127 bytes. With `--windows-exe`, the default pivots to `python.exe` (or `py -<X.Y>` when `--python-version` is set). |
 |  | `--package` | string | iff workspace | — | Workspace member to build; required iff `[tool.uv.workspace]` is present, forbidden otherwise. PEP 503 normalized on both sides. |
 |  | `--no-dev` | flag | no | (default) | Exclude dev-group dependencies (default behavior). |
 |  | `--dev` | flag | no | off | Opt in to dev-group dependencies. Mutually exclusive with `--no-dev`. |
+|  | `--windows-exe` | flag | no | off | Produce a native Windows `.exe` (small Rust launcher prepended to the same zip body) instead of a `.pyz`. Requires `-o` to end in `.exe`. The recipient still needs a Python interpreter on `PATH` or registered with `py.exe`. |
+|  | `--python-version` | string `<X.Y>` | no | build host's `sys.version_info.major.minor` | Target Python `major.minor` for cross-interpreter builds (e.g. `3.12`). Threads through every `uv` invocation as `--python <X.Y>` so wheels are tagged for that ABI; stamped into `env.json.python_version`. uv auto-fetches a managed standalone CPython if the requested version isn't locally installed. Format: `^\d+\.\d+$`. |
 |  | `--force` | flag | no | off | Overwrite an existing regular-file output. Does **not** override a directory target. |
 | `-q` | `--quiet` | flag | no | off | Suppress progress output on stderr; the success line on stdout is preserved. |
 | `-v` | `--verbose` | flag | no | off | On error, append the full traceback to stderr. Mutually exclusive with `--quiet`. |
@@ -47,6 +49,9 @@ moonlit build [PROJECT] -e <entry> | -c <script> -o <output> [flags]
 - `-q` and `-v` are mutually exclusive → exit 2.
 - `--no-dev` and `--dev` are mutually exclusive → exit 2.
 - `--package` is required iff the project is a uv workspace → exit 5 on mismatch.
+- `--windows-exe` requires `--output-file` to end in `.exe` (case-insensitive) → exit 2.
+- `--python-version` must match `^\d+\.\d+$` (major.minor only) → exit 2.
+- When `--windows-exe` AND `--python-version` are set AND `-p` is at its default, the default shebang pivots from `python.exe` to `py -<X.Y>` so the recipient's PEP 397 launcher pins to the matching interpreter.
 - The `MOONLIT_*` environment variables are runtime-only; they are *ignored* during a build.
 
 ### Preflight order
@@ -124,6 +129,18 @@ Get a traceback when something goes wrong:
 
 ```sh
 moonlit build -e myapp.cli:main -o myapp.pyz -v
+```
+
+Cross-compile a `.pyz` for Python 3.12 from a Python 3.13 dev box (uv auto-fetches a managed CPython 3.12 if needed):
+
+```sh
+moonlit build --python-version 3.12 -e myapp.cli:main -o myapp-py312.pyz
+```
+
+Produce a native Windows `.exe` pinned to Python 3.12 (shebang auto-pivots to `py -3.12`):
+
+```sh
+moonlit build --windows-exe --python-version 3.12 -e myapp.cli:main -o myapp.exe
 ```
 
 ## `python -m moonlit`
