@@ -18,6 +18,8 @@
       var size = rand(i, 3, seed);
       var amber = rand(i, 4, seed) > 0.86;
       var lg = size > 0.85;
+      var delay = rand(i, 5, seed) * 4;
+      var duration = 2.4 + rand(i, 6, seed) * 2.2;
       var el = document.createElement("i");
       var cls = [];
       if (lg) cls.push("lg");
@@ -25,6 +27,8 @@
       if (cls.length) el.className = cls.join(" ");
       el.style.top = top + "%";
       el.style.left = left + "%";
+      el.style.setProperty("--ml-tw-delay", delay.toFixed(2) + "s");
+      el.style.setProperty("--ml-tw-duration", duration.toFixed(2) + "s");
       frag.appendChild(el);
     }
     host.appendChild(frag);
