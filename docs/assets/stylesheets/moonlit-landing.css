@@ -292,6 +292,23 @@ h1.ml-h1 .ml-stroke {
 .ml-stars i.lg { width: 3px; height: 3px; opacity: 0.75; }
 .ml-stars i.amber { background: var(--oah-owl-eye); box-shadow: 0 0 5px rgba(255,200,87,0.7); }
 
+@keyframes ml-twinkle {
+  0%, 100% { opacity: var(--ml-tw-min, 0.30); }
+  50%      { opacity: var(--ml-tw-max, 0.80); }
+}
+.ml-stars i {
+  --ml-tw-min: 0.30;
+  --ml-tw-max: 0.80;
+  animation: ml-twinkle var(--ml-tw-duration, 3s) ease-in-out
+             var(--ml-tw-delay, 0s) infinite;
+  will-change: opacity;
+}
+.ml-stars i.lg    { --ml-tw-min: 0.45; --ml-tw-max: 1.00; }
+.ml-stars i.amber { --ml-tw-min: 0.40; --ml-tw-max: 1.00; }
+@media (prefers-reduced-motion: reduce) {
+  .ml-stars i { animation: none; }
+}
+
 /* Crescent moon (variation A) */
 .ml-moon-wrap {
   position: absolute;
