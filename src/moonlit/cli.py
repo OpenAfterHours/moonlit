@@ -369,6 +369,4 @@ _PYTHON_VERSION_RE = re.compile(r"^\d+\.\d+$")
 def _validate_python_version(value: str) -> None:
     """D20: --python-version must be major.minor only (matches cp<X><Y> ABI tag)."""
     if not _PYTHON_VERSION_RE.fullmatch(value):
-        raise click.UsageError(
-            f"--python-version must be major.minor (e.g. 3.12); got {value!r}"
-        )
+        raise click.UsageError(f"--python-version must be major.minor (e.g. 3.12); got {value!r}")

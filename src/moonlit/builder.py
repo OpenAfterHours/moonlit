@@ -382,8 +382,7 @@ def _build_env_dict(
         # passed --python-version (D20), it overrides the build host's version
         # — that's the whole point of cross-interpreter builds.
         "python_version": (
-            config.python_version
-            or f"{sys.version_info.major}.{sys.version_info.minor}"
+            config.python_version or f"{sys.version_info.major}.{sys.version_info.minor}"
         ),
     }
 

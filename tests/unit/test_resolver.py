@@ -170,9 +170,7 @@ def test_export_success_returns_none(fake_run: _FakeRun, tmp_path: Path) -> None
     assert resolver.export(tmp_path, tmp_path / "r.txt") is None
 
 
-def test_export_appends_python_when_version_set(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_export_appends_python_when_version_set(fake_run: _FakeRun, tmp_path: Path) -> None:
     # D20: cross-interpreter builds. uv export accepts only --python (which
     # takes a version spec like "3.12"); --python-version is not a valid
     # flag for `uv export`.
@@ -312,9 +310,7 @@ def test_pip_install_keeps_executable_path_when_no_version(
     assert argv[argv.index("--python") + 1] == sys.executable
 
 
-def test_pip_install_python_version_with_wheel_argv(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_pip_install_python_version_with_wheel_argv(fake_run: _FakeRun, tmp_path: Path) -> None:
     target = tmp_path / "site-packages"
     wheel = tmp_path / "myapp-0.1.0-py3-none-any.whl"
     resolver.pip_install_target(tmp_path, target, wheel=wheel, python_version="3.12")
@@ -352,9 +348,7 @@ def test_build_wheel_argv_with_all_packages(fake_run: _FakeRun, tmp_path: Path) 
     ]
 
 
-def test_build_wheel_appends_python_when_version_set(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_build_wheel_appends_python_when_version_set(fake_run: _FakeRun, tmp_path: Path) -> None:
     # D20: uv runs the project's PEP 517 build backend; --python takes a
     # version spec like "3.12" and uv auto-fetches a managed standalone
     # CPython if the requested version isn't locally installed. uv build
@@ -367,9 +361,7 @@ def test_build_wheel_appends_python_when_version_set(
     assert "--python-version" not in argv
 
 
-def test_build_wheel_omits_python_by_default(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_build_wheel_omits_python_by_default(fake_run: _FakeRun, tmp_path: Path) -> None:
     resolver.build_wheel(tmp_path, tmp_path / "dist")
     assert "--python" not in fake_run.calls[0][0]
 
