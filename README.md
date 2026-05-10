@@ -9,7 +9,7 @@ It is similar to LinkedIn's [shiv](https://github.com/linkedin/shiv), with two d
 
 ## Status
 
-Pre-release (0.x). API and CLI surface are stabilizing toward 1.0; the produced `.pyz` runtime contract is pinned by the design specs under [`specs/`](specs/).
+Beta (0.x). The build pipeline, runtime bootstrap, `.pyz`/`.exe` output shape, env.json schema, cache layout, and locking protocol are stable and pinned by the design specs under [`specs/`](specs/). Remaining flag work (`--reproducible`, `--compile-pyc`, `--no-modify`, `--python-platform`) is additive — no breaking changes to shipped contracts are anticipated before 1.0.
 
 ## Install
 
