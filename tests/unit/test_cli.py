@@ -1093,3 +1093,157 @@ def test_windows_exe_explicit_python_flag_passthrough(
     except SystemExit as exc:
         assert exc.code in (0, None)
     assert captured["python_shebang"] == "C:\\custom\\python.exe"
+
+
+# ---------- D20: --python-version (cross-interpreter builds) ----------
+
+
+def _capture_config(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Stub run_build so we can inspect the BuildConfig the CLI assembles."""
+    captured: dict[str, Any] = {}
+    real_build = cli_module.run_build
+
+    def capture_and_run(config: Any) -> int:
+        captured["config"] = config
+        return real_build(config)
+
+    monkeypatch.setattr(cli_module, "run_build", capture_and_run)
+    return captured
+
+
+def test_python_version_threads_into_buildconfig(
+    monkeypatch: pytest.MonkeyPatch, project_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out" / "app.pyz"
+    out.parent.mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "moonlit",
+            "build",
+            str(project_root),
+            "--python-version",
+            "3.12",
+            "-e",
+            "myapp:main",
+            "-o",
+            str(out),
+        ],
+    )
+    captured = _capture_config(monkeypatch)
+    try:
+        cli_module.main()
+    except SystemExit as exc:
+        assert exc.code in (0, None)
+    assert captured["config"].python_version == "3.12"
+
+
+def test_python_version_default_is_none(
+    monkeypatch: pytest.MonkeyPatch, project_root: Path, tmp_path: Path
+) -> None:
+    # When the flag is omitted, BuildConfig.python_version stays None so
+    # _build_env_dict falls back to the build host's sys.version_info.
+    out = tmp_path / "out" / "app.pyz"
+    out.parent.mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        ["moonlit", "build", str(project_root), "-e", "myapp:main", "-o", str(out)],
+    )
+    captured = _capture_config(monkeypatch)
+    try:
+        cli_module.main()
+    except SystemExit as exc:
+        assert exc.code in (0, None)
+    assert captured["config"].python_version is None
+
+
+@pytest.mark.parametrize("bad", ["3", "3.12.0", "py3.12", "", "3.x", "v3.12", " 3.12"])
+def test_python_version_invalid_format_errors(
+    monkeypatch: pytest.MonkeyPatch, project_root: Path, tmp_path: Path, bad: str
+) -> None:
+    out = tmp_path / "out" / "app.pyz"
+    out.parent.mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "moonlit",
+            "build",
+            str(project_root),
+            "--python-version",
+            bad,
+            "-e",
+            "myapp:main",
+            "-o",
+            str(out),
+        ],
+    )
+    with pytest.raises(SystemExit) as excinfo:
+        cli_module.main()
+    assert excinfo.value.code == 2  # click UsageError → exit 2
+
+
+def test_windows_exe_with_python_version_pivots_shebang_to_py_launcher(
+    monkeypatch: pytest.MonkeyPatch, project_root: Path, tmp_path: Path
+) -> None:
+    # D20: when --python-version is set in --windows-exe mode and -p is at
+    # default, pivot the shebang to `py -X.Y` so the recipient's Windows
+    # launcher pins to the matching interpreter.
+    out = tmp_path / "out" / "app.exe"
+    out.parent.mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "moonlit",
+            "build",
+            str(project_root),
+            "--windows-exe",
+            "--python-version",
+            "3.12",
+            "-e",
+            "myapp:main",
+            "-o",
+            str(out),
+        ],
+    )
+    captured = _capture_config(monkeypatch)
+    try:
+        cli_module.main()
+    except SystemExit as exc:
+        assert exc.code in (0, None)
+    assert captured["config"].python_shebang == "py -3.12"
+
+
+def test_windows_exe_with_python_version_respects_explicit_python(
+    monkeypatch: pytest.MonkeyPatch, project_root: Path, tmp_path: Path
+) -> None:
+    # An explicit -p still wins over the cross-version pivot.
+    out = tmp_path / "out" / "app.exe"
+    out.parent.mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "moonlit",
+            "build",
+            str(project_root),
+            "--windows-exe",
+            "--python-version",
+            "3.12",
+            "-p",
+            "C:\\custom\\python.exe",
+            "-e",
+            "myapp:main",
+            "-o",
+            str(out),
+        ],
+    )
+    captured = _capture_config(monkeypatch)
+    try:
+        cli_module.main()
+    except SystemExit as exc:
+        assert exc.code in (0, None)
+    assert captured["config"].python_shebang == "C:\\custom\\python.exe"

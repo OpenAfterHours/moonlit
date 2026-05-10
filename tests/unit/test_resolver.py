@@ -170,6 +170,27 @@ def test_export_success_returns_none(fake_run: _FakeRun, tmp_path: Path) -> None
     assert resolver.export(tmp_path, tmp_path / "r.txt") is None
 
 
+def test_export_appends_python_when_version_set(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    # D20: cross-interpreter builds. uv export accepts only --python (which
+    # takes a version spec like "3.12"); --python-version is not a valid
+    # flag for `uv export`.
+    out = tmp_path / "req.txt"
+    resolver.export(tmp_path, out, python_version="3.12")
+    argv = fake_run.calls[0][0]
+    assert "--python" in argv
+    assert argv[argv.index("--python") + 1] == "3.12"
+    # The resolver-hint --python-version flag must NOT be added (uv export
+    # would reject it).
+    assert "--python-version" not in argv
+
+
+def test_export_omits_python_by_default(fake_run: _FakeRun, tmp_path: Path) -> None:
+    resolver.export(tmp_path, tmp_path / "r.txt")
+    assert "--python" not in fake_run.calls[0][0]
+
+
 # ---------- pip_install_target ----------
 
 
@@ -259,6 +280,50 @@ def test_pip_install_wheel_failure_raises_staging_error(fake_run: _FakeRun, tmp_
         resolver.pip_install_target(tmp_path, tmp_path / "s", wheel=tmp_path / "x.whl")
 
 
+def test_pip_install_python_version_replaces_executable_path(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    # D20: --python takes either a path (sys.executable, default) or a
+    # version spec ("3.12"); the resolver swaps one for the other rather
+    # than passing both. (uv's `--python-version` flag on `pip install` is a
+    # resolver hint, not interpreter selection — not what we want here.)
+    target = tmp_path / "site-packages"
+    req = tmp_path / "req.txt"
+    resolver.pip_install_target(tmp_path, target, requirement=req, python_version="3.12")
+    argv = fake_run.calls[0][0]
+    assert "--python" in argv
+    assert argv[argv.index("--python") + 1] == "3.12"
+    # Exactly one --python token; sys.executable is NOT also passed.
+    assert argv.count("--python") == 1
+    assert sys.executable not in argv
+    # Resolver-hint flag must not be confused with interpreter selection.
+    assert "--python-version" not in argv
+
+
+def test_pip_install_keeps_executable_path_when_no_version(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    # Backward-compat: without python_version, --python <sys.executable>.
+    target = tmp_path / "site-packages"
+    req = tmp_path / "req.txt"
+    resolver.pip_install_target(tmp_path, target, requirement=req)
+    argv = fake_run.calls[0][0]
+    assert "--python" in argv
+    assert argv[argv.index("--python") + 1] == sys.executable
+
+
+def test_pip_install_python_version_with_wheel_argv(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    target = tmp_path / "site-packages"
+    wheel = tmp_path / "myapp-0.1.0-py3-none-any.whl"
+    resolver.pip_install_target(tmp_path, target, wheel=wheel, python_version="3.12")
+    argv = fake_run.calls[0][0]
+    assert argv[argv.index("--python") + 1] == "3.12"
+    # The wheel positional must still be the last token (uv pip install <wheel>).
+    assert argv[-1] == str(wheel)
+
+
 # ---------- build_wheel ----------
 
 
@@ -285,6 +350,28 @@ def test_build_wheel_argv_with_all_packages(fake_run: _FakeRun, tmp_path: Path) 
         "--out-dir",
         str(out_dir),
     ]
+
+
+def test_build_wheel_appends_python_when_version_set(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    # D20: uv runs the project's PEP 517 build backend; --python takes a
+    # version spec like "3.12" and uv auto-fetches a managed standalone
+    # CPython if the requested version isn't locally installed. uv build
+    # does NOT accept --python-version.
+    out_dir = tmp_path / "dist"
+    resolver.build_wheel(tmp_path, out_dir, python_version="3.12")
+    argv = fake_run.calls[0][0]
+    assert "--python" in argv
+    assert argv[argv.index("--python") + 1] == "3.12"
+    assert "--python-version" not in argv
+
+
+def test_build_wheel_omits_python_by_default(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    resolver.build_wheel(tmp_path, tmp_path / "dist")
+    assert "--python" not in fake_run.calls[0][0]
 
 
 def test_build_wheel_uses_pinned_subprocess_kwargs(fake_run: _FakeRun, tmp_path: Path) -> None:

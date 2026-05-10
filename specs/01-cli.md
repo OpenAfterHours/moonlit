@@ -41,7 +41,8 @@ moonlit build [PROJECT] [flags]
 |       | `--package` | string | none | conditional | Workspace member to build. Required iff `[tool.uv.workspace]` exists in PROJECT's `pyproject.toml`; forbidden otherwise. Matched per D12 (PEP-503 normalized on both sides). |
 |       | `--no-dev` | flag | true (default behavior) | no | Asserts the default: dev-group deps are EXCLUDED from the build. Passing `--no-dev` is idempotent. |
 |       | `--dev` | flag | false | no | Opt in to dev-group deps. Mutually exclusive with `--no-dev`; passing both → exit 2. |
-|       | `--windows-exe` | flag | false | no | Produce a native Windows `.exe` (launcher + zipapp) instead of a `.pyz`. Requires `-o` to end in `.exe`; defaults `--python` to `python.exe` if not explicitly set. See D19. |
+|       | `--windows-exe` | flag | false | no | Produce a native Windows `.exe` (launcher + zipapp) instead of a `.pyz`. Requires `-o` to end in `.exe`; defaults `--python` to `python.exe` (or `py -<X.Y>` when `--python-version` is also set, see D20) if not explicitly set. See D19. |
+|       | `--python-version` | string | none (build host's `sys.version_info`) | no | Target Python `major.minor` for cross-interpreter builds (e.g. `3.12`). Threaded through every `uv` invocation as `--python-version` so wheels are tagged for that ABI; stamped into `env.json` as `python_version` for the runtime mismatch check. Format: `^\d+\.\d+$`. See D20. |
 |       | `--force` | flag | false | no | If `<output>` exists and is a regular file, overwrite it. Has no effect when the path does not exist. Does NOT cover non-file targets (see Section 5). |
 | `-q` | `--quiet` | flag | false | no | Suppress non-error stderr. |
 | `-v` | `--verbose` | flag | false | no | Echo `uv` invocations as `+ uv <argv>` on stderr (POSIX `shlex.quote` style on all platforms, for copy-paste consistency); show tracebacks on errors. |

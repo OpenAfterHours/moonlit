@@ -50,7 +50,7 @@ The `re.IGNORECASE` flag is mandatory. Without it, all-lowercase names (e.g. `my
 
 3.7 `python_shebang` — non-empty; no embedded newline; no leading `#!` (the build pipeline writes the `#!...\n` prefix outside the zip header — D1).
 
-3.8 `python_version` (v1-optional) — must match `^\d+\.\d+$` when present, e.g. `"3.13"`. Stores the build interpreter's `sys.version_info.major.minor` and matches the `cp<X><Y>` ABI tag of every wheel uv stages. The bootstrap compares this against the runtime interpreter's major.minor and exits 1 with a "built for X.Y, running A.B" message on mismatch — surfacing the real cause of the otherwise-mysterious `ModuleNotFoundError: No module named '<pkg>._core'` that occurs when a wheel's `.pyd` is silently skipped for ABI-tag mismatch. When the field is absent (older archives produced before this field's introduction) the bootstrap skips the check.
+3.8 `python_version` (v1-optional) — must match `^\d+\.\d+$` when present, e.g. `"3.13"`. Stores the **target** Python's `major.minor` and matches the `cp<X><Y>` ABI tag of every wheel uv stages. Source-of-truth at build time: `BuildConfig.python_version` (set when the user passes `--python-version`, D20 cross-interpreter builds), falling back to the build host's `sys.version_info.major.minor`. The bootstrap compares this against the runtime interpreter's major.minor and exits 1 with a "built for X.Y, running A.B" message on mismatch — surfacing the real cause of the otherwise-mysterious `ModuleNotFoundError: No module named '<pkg>._core'` that occurs when a wheel's `.pyd` is silently skipped for ABI-tag mismatch. When the field is absent (older archives produced before this field's introduction) the bootstrap skips the check.
 
 ## 4. Validation algorithm (D8, consumer)
 

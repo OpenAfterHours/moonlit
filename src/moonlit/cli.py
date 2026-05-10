@@ -14,6 +14,7 @@ MalformedPyprojectError on missing pyproject) before delegating to
 directly in this module since it has no pipeline.
 """
 
+import re
 import shutil
 import signal
 import sys
@@ -126,6 +127,16 @@ def cli(ctx: click.Context) -> None:
     help="Produce a native Windows .exe (launcher + zipapp) instead of a .pyz.",
 )
 @click.option(
+    "--python-version",
+    "python_version",
+    default=None,
+    help=(
+        "Target Python major.minor for cross-interpreter builds (e.g. 3.12). "
+        "Threads through every uv invocation so wheels match that ABI; "
+        "stamped into env.json. Default: build host's major.minor."
+    ),
+)
+@click.option(
     "--force",
     "force",
     is_flag=True,
@@ -146,6 +157,7 @@ def build_cmd(
     no_dev_flag: bool,
     dev_flag: bool,
     windows_exe: bool,
+    python_version: str | None,
     force: bool,
     quiet: bool,
     verbose: bool,
@@ -161,12 +173,20 @@ def build_cmd(
     if windows_exe and not output_file.lower().endswith(".exe"):
         # spec §3 rule 5 / D19b: --windows-exe demands an .exe output suffix.
         raise click.UsageError("--windows-exe requires --output-file to end in .exe")
+    if python_version is not None:
+        _validate_python_version(python_version)
     if (
         windows_exe
         and ctx.get_parameter_source("python_shebang") == click.core.ParameterSource.DEFAULT
     ):
-        # D19c: pivot the default shebang to one Windows can resolve.
-        python_shebang = "python.exe"
+        # D19c / D20: when --python-version is explicitly set, pivot the
+        # default shebang to `py -X.Y` so the Windows PEP 397 launcher
+        # selects the matching interpreter; otherwise keep the bare
+        # `python.exe` default for the local-roundtrip case.
+        if python_version is not None:
+            python_shebang = f"py -{python_version}"
+        else:
+            python_shebang = "python.exe"
     _validate_shebang(python_shebang)
 
     # spec §4 step 2: PROJECT resolves to existing directory.
@@ -202,6 +222,7 @@ def build_cmd(
         force=force,
         verbosity=verbosity,
         windows_exe=windows_exe,
+        python_version=python_version,
     )
     sys.exit(run_build(config))
 
@@ -334,3 +355,20 @@ def _validate_shebang(shebang: str) -> None:
         raise click.UsageError("--python must not contain newline, carriage-return, or NUL bytes")
     if len(shebang.encode("ascii")) > 127:
         raise click.UsageError("--python encoded length exceeds 127 bytes")
+
+
+# Mirrors `_PYTHON_VERSION` in src/moonlit/_bootstrap/environment.py. Kept as a
+# duplicate (rather than a private import from a stdlib-only sibling package)
+# so the CLI's accept-set and env.json's accept-set are pinned by the same
+# literal regardless of import direction. If the format ever changes, update
+# both sites — there's a unit test that round-trips a value through the CLI
+# into env.json so a divergence would surface.
+_PYTHON_VERSION_RE = re.compile(r"^\d+\.\d+$")
+
+
+def _validate_python_version(value: str) -> None:
+    """D20: --python-version must be major.minor only (matches cp<X><Y> ABI tag)."""
+    if not _PYTHON_VERSION_RE.fullmatch(value):
+        raise click.UsageError(
+            f"--python-version must be major.minor (e.g. 3.12); got {value!r}"
+        )

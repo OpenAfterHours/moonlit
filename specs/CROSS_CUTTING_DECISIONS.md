@@ -261,6 +261,20 @@ If no entry matches, the build raises `InternalError` (exit 11) with a message n
 
 The bootstrap, env.json, cache layout, and zip body are unaffected by D19. The launcher cedes control to Python with the .exe path as `argv[1]`, and Python's zipapp/zipimport machinery reads the trailing zip exactly as it would for a `.pyz`.
 
+## D20 — Cross-interpreter builds (`--python-version`)
+
+`--python-version <X.Y>` lets a developer build a `.pyz`/`.exe` whose bundled wheels are tagged for a Python ABI different from the build host's. Format: `^\d+\.\d+$` (major.minor only — patch versions don't affect ABI within a minor). Source-of-truth at the resolver layer for which Python uv targets; source-of-truth in `env.json.python_version` for the runtime mismatch check (spec 05 §3.8).
+
+**D20a — Plumbing.** When set, `BuildConfig.python_version` is threaded through every uv invocation as `--python <X.Y>` (uv accepts a version spec on its single `--python` flag): `uv export` (resolution), `uv pip install --target` (download/install of pre-built wheels), `uv build --wheel` (project's own PEP 517 build). uv auto-fetches a managed standalone CPython for the requested version if no local install matches; `UV_PYTHON_DOWNLOADS=never` opts out and turns missing-interpreter into a uv-level error that surfaces as the corresponding moonlit error class for whichever step ran (`StagingError` 9 / `WheelArtifactError` 10 / `ExportError` 8). The user-facing CLI flag is named `--python-version` for semantic clarity ("target Python *version*", not a path); the moonlit resolver maps it onto uv's `--python` because that is the actual flag uv accepts on `export` and `build`.
+
+**D20b — Single-flag form on `uv pip install`.** uv `pip install` accepts both `--python <PYTHON>` (interpreter selection — path or version spec) and `--python-version <X.Y>` (resolver minimum-version *hint*, NOT interpreter selection). moonlit uses `--python` exclusively in all three resolver functions and never passes uv's `--python-version`. `resolver.pip_install_target` swaps the value of the single `--python` token between the version spec (when D20 is active) and `sys.executable` (otherwise) rather than appending a second flag.
+
+**D20c — env.json source-of-truth.** `_build_env_dict` stamps `env.json.python_version` from `BuildConfig.python_version` (when set) else `f"{sys.version_info.major}.{sys.version_info.minor}"`. The runtime version-mismatch check in `_bootstrap/__init__.py:_check_python_version` compares this against the recipient's `sys.version_info.major.minor` — so a cross-compiled artifact carries the **target's** version and rejects the **host's** Python on mismatch, which is the desired symmetry.
+
+**D20d — Windows-exe shebang pivot.** When `--windows-exe` AND `--python-version <X.Y>` are both set AND `--python` is at its Click `ParameterSource.DEFAULT`, the default shebang pivots from `python.exe` to `py -<X.Y>` (PEP 397 launcher). Rationale: in cross-interpreter mode the developer has explicitly declared a target version, so the recipient's launcher should pin to that version rather than picking whatever bare `python.exe` resolves on PATH. Without `--python-version`, the existing `python.exe` default (D19c) is preserved so the developer's local roundtrip isn't broken when their build host's Python isn't py-launcher-registered.
+
+**D20e — `--python-platform` deferred.** The symmetric `--python-platform <triple>` flag (cross-OS / cross-arch builds) is intentionally NOT shipped in v0.x. Reasons: target-platform wheels must exist on PyPI for every dep in `uv.lock`, the validation/error story is significantly larger, and the use case is strictly less common than cross-version-on-the-same-OS. Future addition under the same D20 family.
+
 ---
 
 These decisions are the binding contract for v2. Authors who deviate must explicitly justify why; otherwise apply them mechanically.

@@ -60,6 +60,11 @@ class BuildConfig:
     # D19: when True, prepend a native Windows launcher to the zip body so the
     # produced file runs as a `.exe` without an explicit Python prefix.
     windows_exe: bool = False
+    # D20: when set (e.g. "3.12"), thread `--python-version` through every uv
+    # invocation so wheels are tagged for that Python's ABI rather than the
+    # build host's. Stamped into env.json's `python_version` for the runtime
+    # mismatch check (spec 03 §2 step 4a).
+    python_version: str | None = None
 
 
 @dataclass(frozen=True)
@@ -203,20 +208,32 @@ def _run_pipeline(
 
     with Step("freezing dependencies (uv export)", verbosity=verbosity) as step:
         resolver.export(
-            config.project_root, req_path, package=package_for_export, verbosity=verbosity
+            config.project_root,
+            req_path,
+            package=package_for_export,
+            python_version=config.python_version,
+            verbosity=verbosity,
         )
         n_reqs = _count_requirements(req_path)
         step.set_result(f"frozen · {n_reqs} packages")
 
     with Step("installing dependencies into staging", verbosity=verbosity) as step:
         resolver.pip_install_target(
-            config.project_root, site_packages, requirement=req_path, verbosity=verbosity
+            config.project_root,
+            site_packages,
+            requirement=req_path,
+            python_version=config.python_version,
+            verbosity=verbosity,
         )
         step.set_result(f"installed · {n_reqs} packages")
 
     with Step("building wheels (uv build)", verbosity=verbosity) as step:
         resolver.build_wheel(
-            config.project_root, dist_dir, all_packages=is_workspace, verbosity=verbosity
+            config.project_root,
+            dist_dir,
+            all_packages=is_workspace,
+            python_version=config.python_version,
+            verbosity=verbosity,
         )
         wheels = sorted(dist_dir.glob("*.whl"))
         _validate_wheels(wheels, target, is_workspace)
@@ -225,7 +242,11 @@ def _run_pipeline(
     with Step("installing wheels into staging", verbosity=verbosity) as step:
         for wheel in wheels:
             resolver.pip_install_target(
-                config.project_root, site_packages, wheel=wheel, verbosity=verbosity
+                config.project_root,
+                site_packages,
+                wheel=wheel,
+                python_version=config.python_version,
+                verbosity=verbosity,
             )
         step.set_result(f"installed · {len(wheels)} wheel{'s' if len(wheels) != 1 else ''}")
 
@@ -356,9 +377,14 @@ def _build_env_dict(
         "built_at": datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "moonlit_version": _MOONLIT_VERSION,
         "python_shebang": config.python_shebang,
-        # v1-optional per spec 05 §7. Stamp the build interpreter's
-        # major.minor so the bootstrap can fail fast on ABI-tag mismatch.
-        "python_version": f"{sys.version_info.major}.{sys.version_info.minor}",
+        # v1-optional per spec 05 §7. Stamp the *target* Python's major.minor
+        # so the bootstrap can fail fast on ABI-tag mismatch. When the user
+        # passed --python-version (D20), it overrides the build host's version
+        # — that's the whole point of cross-interpreter builds.
+        "python_version": (
+            config.python_version
+            or f"{sys.version_info.major}.{sys.version_info.minor}"
+        ),
     }
 
 

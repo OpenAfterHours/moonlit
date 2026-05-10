@@ -183,6 +183,7 @@ def make_config(
     package: str | None = None,
     force: bool = False,
     verbosity: int = 0,
+    python_version: str | None = None,
 ) -> BuildConfig:
     return BuildConfig(
         project_root=project_root,
@@ -193,6 +194,7 @@ def make_config(
         package=package,
         force=force,
         verbosity=verbosity,
+        python_version=python_version,
     )
 
 
@@ -572,6 +574,23 @@ def test_env_json_records_build_python_major_minor(
     build(config)
     env = _read_env_json(output_path)
     assert env["python_version"] == f"{sys.version_info.major}.{sys.version_info.minor}"
+
+
+def test_env_json_records_target_python_version_when_cross_compiled(
+    project_root: Path, output_path: Path, fake_resolver: dict
+) -> None:
+    # D20: with --python-version, env.json should reflect the *target*, not
+    # the build host's sys.version_info — that's the version the runtime
+    # mismatch check will compare against on the recipient's machine.
+    config = make_config(
+        project_root,
+        output_path,
+        entry_point="myapp.cli:main",
+        python_version="3.12",
+    )
+    build(config)
+    env = _read_env_json(output_path)
+    assert env["python_version"] == "3.12"
 
 
 # ---------- archive output side effects ----------

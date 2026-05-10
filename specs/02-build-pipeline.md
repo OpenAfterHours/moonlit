@@ -22,32 +22,34 @@ All `subprocess.run` invocations use `shell=False, check=False, capture_output=T
 
 **Step 3 — `uv export`** (`resolver.export`, `cwd = project_root`):
 ```
-uv export --frozen --no-dev --no-emit-workspace --format requirements-txt [--package <name>] --output-file <tmp>/requirements.txt
+uv export --frozen --no-dev --no-emit-workspace [--python <X.Y>] --format requirements-txt [--package <name>] --output-file <tmp>/requirements.txt
 ```
+`--python <X.Y>` (a version spec — uv accepts paths or version strings on this single flag) is appended when `BuildConfig.python_version` is set, so the resolver targets the requested interpreter's metadata rather than the build host's (D20: cross-interpreter builds). `uv export` does not accept a separate `--python-version` flag; `--python` is the universal interpreter selector.
+
 `FileNotFoundError` for the `uv` binary → `UvNotFoundError` (3). Exit code non-zero with stderr matching `re.search(r"uv\.lock.*not found|no .*lockfile", stderr, re.IGNORECASE)` → `NoLockfileError` (4). Drift (`re.search(r"out.of.date|frozen", stderr, re.IGNORECASE)`) → `ExportError` (8) with message `"uv.lock is out of date with pyproject.toml; run \`uv lock\` and retry."`. Any other non-zero → `ExportError` (8) with prefixed stderr.
 
 **Step 4 — Stage transitive deps** (`resolver.pip_install_target`, `cwd = project_root`):
 ```
-uv pip install --target <staging>/site-packages --no-deps --requirement <tmp>/requirements.txt --python <sys.executable>
+uv pip install --target <staging>/site-packages --no-deps --requirement <tmp>/requirements.txt --python {<X.Y> | <sys.executable>}
 ```
-Non-zero → `StagingError` (9).
+`--python` always carries a single value: when D20 is in effect, the version spec `<X.Y>` (uv auto-fetches a managed standalone CPython if needed); otherwise the build host's `sys.executable` path. uv's separate `--python-version` flag on `pip install` is a resolver minimum-version hint, not interpreter selection — moonlit does not pass it. Non-zero → `StagingError` (9).
 
 **Step 5 — Build wheel(s)** (`resolver.build_wheel`, `cwd = project_root`). Per D2:
 
 If workspace:
 ```
-uv build --all-packages --wheel --out-dir <tmp>/dist
+uv build --all-packages [--python <X.Y>] --wheel --out-dir <tmp>/dist
 ```
 Else:
 ```
-uv build --wheel --out-dir <tmp>/dist
+uv build [--python <X.Y>] --wheel --out-dir <tmp>/dist
 ```
-Non-zero exit → `WheelArtifactError` (10). After success, `wheels = sorted((<tmp>/dist).glob("*.whl"))` (lexicographic on POSIX path; sidecar `*.whl.metadata` files are excluded by the strict `*.whl` glob). Workspaces: `len(wheels) >= 1`. Non-workspaces: `len(wheels) == 1`. The non-workspace single wheel must have `metadata.name` PEP-503-equal to the target name; otherwise `WheelArtifactError` (10).
+`--python <X.Y>` (version spec) is appended when `BuildConfig.python_version` is set; uv runs the project's PEP 517 build backend under that interpreter, fetching a managed standalone CPython if the requested version isn't locally installed (D20). Non-zero exit → `WheelArtifactError` (10). After success, `wheels = sorted((<tmp>/dist).glob("*.whl"))` (lexicographic on POSIX path; sidecar `*.whl.metadata` files are excluded by the strict `*.whl` glob). Workspaces: `len(wheels) >= 1`. Non-workspaces: `len(wheels) == 1`. The non-workspace single wheel must have `metadata.name` PEP-503-equal to the target name; otherwise `WheelArtifactError` (10).
 
 **Step 6 — Install every wheel into staging** (`resolver.pip_install_target`, `cwd = project_root`). Per D2, loop:
 ```
 for wheel in wheels:
-    uv pip install --target <staging>/site-packages --no-deps --python <sys.executable> <wheel>
+    uv pip install --target <staging>/site-packages --no-deps --python {<X.Y> | <sys.executable>} <wheel>
 ```
 No `--reinstall-package`; no `--reinstall`. Each non-zero exit → `StagingError` (9). Ordering is the lexicographic `wheels` list above; later wheels overwrite earlier ones. For workspaces, this is the mechanism by which transitive workspace deps (e.g. `greeter` for `shouter`) reach the staging tree.
 

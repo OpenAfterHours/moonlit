@@ -37,9 +37,17 @@ def export(
     output_file: Path,
     *,
     package: str | None = None,
+    python_version: str | None = None,
     verbosity: int = 0,
 ) -> None:
     """Run ``uv export`` to write a frozen requirements file (step 3).
+
+    When ``python_version`` is set (e.g. ``"3.12"``), pass it through as
+    ``--python <X.Y>`` so the resolved requirements target that ABI rather
+    than the build host's interpreter. uv accepts a version spec on
+    ``--python`` and auto-fetches a managed standalone CPython if needed
+    (cross-interpreter builds, D20). ``uv export`` does NOT accept
+    ``--python-version``; ``--python`` is the universal flag.
 
     Errors:
 
@@ -57,6 +65,8 @@ def export(
         "--format",
         "requirements-txt",
     ]
+    if python_version is not None:
+        argv += ["--python", python_version]
     if package is not None:
         argv += ["--package", package]
     argv += ["--output-file", str(output_file)]
@@ -79,12 +89,21 @@ def pip_install_target(
     *,
     requirement: Path | None = None,
     wheel: Path | None = None,
+    python_version: str | None = None,
     verbosity: int = 0,
 ) -> None:
     """Run ``uv pip install --target`` (step 4 with requirement, step 6 with wheel).
 
     Exactly one of ``requirement`` or ``wheel`` must be supplied; passing both
     or neither is a programmer error and raises ``InternalError`` (exit 11).
+
+    When ``python_version`` is set, ``--python <X.Y>`` (a version spec) is
+    passed instead of ``--python <sys.executable>`` (a path). uv resolves
+    the version spec to a managed standalone CPython if no local install
+    matches; the install targets that interpreter's ABI (D20: cross-interpreter
+    builds). ``uv pip install``'s separate ``--python-version`` flag is a
+    resolver minimum-version hint, not interpreter selection — it is NOT
+    what we want here.
     """
     if (requirement is None) == (wheel is None):
         raise InternalError("pip_install_target requires exactly one of requirement= or wheel=")
@@ -99,7 +118,7 @@ def pip_install_target(
     ]
     if requirement is not None:
         argv += ["--requirement", str(requirement)]
-    argv += ["--python", sys.executable]
+    argv += ["--python", python_version if python_version is not None else sys.executable]
     if wheel is not None:
         argv.append(str(wheel))
 
@@ -114,6 +133,7 @@ def build_wheel(
     out_dir: Path,
     *,
     all_packages: bool = False,
+    python_version: str | None = None,
     verbosity: int = 0,
 ) -> None:
     """Run ``uv build --wheel`` (step 5).
@@ -121,10 +141,18 @@ def build_wheel(
     For workspaces, pass ``all_packages=True`` per D2 — every member's wheel
     is produced and the caller installs each into staging via
     :func:`pip_install_target`.
+
+    When ``python_version`` is set, pass ``--python <X.Y>`` (a version spec)
+    so uv runs the project's PEP 517 build backend under that interpreter
+    (D20). uv auto-fetches a managed standalone CPython if the requested
+    version isn't locally installed. ``uv build`` does NOT accept
+    ``--python-version``.
     """
     argv = ["uv", "build"]
     if all_packages:
         argv.append("--all-packages")
+    if python_version is not None:
+        argv += ["--python", python_version]
     argv += ["--wheel", "--out-dir", str(out_dir)]
 
     proc = _run_uv(argv, cwd=project_root, verbosity=verbosity)
