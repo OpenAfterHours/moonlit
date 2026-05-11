@@ -101,6 +101,41 @@ implementation is interchangeable. We re-implement the algorithm rather than
 vendor distlib's launcher so that the binary, license, and source all live
 in the same repository.
 
+## Bundled Python (`--bundle-python`, D21/D22)
+
+When `moonlit build --windows-exe --bundle-python` is used, the trailing
+zip carries an extra `_python/` subtree containing a python-build-standalone
+CPython distribution (one `python.exe` at the root plus `Lib/`, `DLLs/`,
+`python3XX.dll`, etc.). The on-disk byte layout is unchanged — the entries
+just live alongside `site-packages/`, `_bootstrap/`, `__main__.py`, and
+`env.json` inside the zip body.
+
+At run time, the launcher scans the trailing zip's central directory before
+anything else. If it finds at least one entry whose filename starts with
+`_python/`, it switches to the **bundled** path:
+
+1. Compute a SHA-256 **fingerprint** over the sorted `(arcname, crc32_le)`
+   pairs of every `_python/*` entry. Producer-side this is
+   `hashing.compute_python_fingerprint` in
+   `src/moonlit/hashing.py`; the two implementations MUST agree byte-for-byte
+   (cross-language contract pinned in `specs/02-build-pipeline.md` §4a).
+2. Look up `%LOCALAPPDATA%\moonlit\python\<fingerprint>\`. Fast path: if
+   `python.exe` is already there, skip the extract.
+3. Slow path: acquire `LockFileEx` on `<fingerprint>.lock` (mirrors the
+   `_bootstrap/locking.py` D13 parameters), re-check the cache, then
+   inflate every entry to a `<fingerprint>.tmp.<pid>\` sibling and
+   `MoveFileExW` it into place atomically.
+4. Spawn `<cache>\python.exe -I <self_path> <forwarded args>` with
+   `MOONLIT_BUNDLED_PYTHON=<fingerprint>` set in the child environment. The
+   `-I` flag isolates the child from any host-Python env / user-site leaks;
+   the env var lets the moonlit bootstrap know it's running under the
+   launcher-dispatched interpreter and skip the python-version mismatch
+   check.
+
+The launcher implements its own central-directory walker (no `zip` crate)
+and uses only two added deps: `miniz_oxide` for deflate and `sha2` for
+SHA-256. Cargo.toml is the source of truth for these.
+
 ## License
 
 MIT — see [LICENSE](LICENSE.txt).

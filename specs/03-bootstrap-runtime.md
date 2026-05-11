@@ -42,6 +42,8 @@ sys.exit(bootstrap())
 3. Read `env.json`, validate per D8 (existence, UTF-8 decode, `json.loads`, top-level dict, `schema_version` int and `not isinstance(_, bool)`, `== 1`, required keys, types, formats, optional `python_version` type/format). First failure exits 1 with the matrix message.
 4. Hydrate `Environment` dataclass.
 4a. **Python version check.** If `env.python_version` is present and `f"{sys.version_info.major}.{sys.version_info.minor}"` is not equal to it, exit 1 with `"this archive was built for Python <X.Y>, but you are running Python <A.B>; install a Python <X.Y> interpreter or rebuild with \`moonlit build --python <python-X.Y>\`"`. When the field is absent (older archives), skip this check. The check fires before cache-root resolution and extraction so a wrong-Python invocation never touches the cache.
+
+**Carve-out for bundled Python (D21):** when `env.bundled_python` is present AND `os.environ.get("MOONLIT_BUNDLED_PYTHON", "") == env.bundled_python.fingerprint`, the version check is skipped. The launcher sets `MOONLIT_BUNDLED_PYTHON` to the bundled-Python fingerprint exactly when it dispatches its own cached interpreter — so the test confirms "I am the launcher's bundled interpreter, not a wrong system Python." If the fingerprint doesn't match (a forged env var, or a stale value from a previous run of a different .exe), fall through to the strict check. If `MOONLIT_BUNDLED_PYTHON` is absent (the .exe was launched without going through the launcher's bundled path) the strict check applies — which is correct, because the running interpreter is the user's system Python.
 5. Compute `normalized_name = re.sub(r"[-_.]+", "-", env.name).lower()` and `cache_key`.
 6. Resolve **cache_root** (Section 3).
 7. Compute `site_parent` and `site_dir`.
@@ -175,7 +177,7 @@ Coercion of the return value:
 
 ## 9. Environment variables (D16)
 
-Exactly four are read. "Truthy" means present and non-empty after `os.environ.get(name, "")`.
+Five are read. "Truthy" means present and non-empty after `os.environ.get(name, "")`.
 
 | Variable | Meaning |
 |----------|---------|
@@ -183,6 +185,7 @@ Exactly four are read. "Truthy" means present and non-empty after `os.environ.ge
 | `MOONLIT_FORCE_EXTRACT` | Force re-extraction even on cache hit (does NOT bypass lock). |
 | `MOONLIT_ENTRY_POINT` | Override `env.entry_point`. |
 | `MOONLIT_DEBUG` | Print bootstrap-internal tracebacks to stderr on failure. |
+| `MOONLIT_BUNDLED_PYTHON` | Set by the Windows launcher (D22) to the bundled-Python fingerprint when it dispatches its own cached interpreter. The bootstrap reads it in §2 step 4a to skip the python-version mismatch check. **Not user-facing**: users SHOULD NOT set this manually; doing so does not bypass extraction or the lock, it only skips the version check, which is harmless when bogus (the wrong Python will fail later at import time). |
 
 `MOONLIT_FORCE_EXTRACT=0` is **non-empty hence truthy** — surprising but consistent with the policy. No special-casing of `0` / `false` / `no`. `MOONLIT_PREPEND_PYTHONPATH` and `MOONLIT_INTERPRETER` are NOT recognized in v0.1; they are reserved for v0.2 features and listed nowhere in the v1 contract.
 

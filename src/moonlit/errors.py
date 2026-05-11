@@ -73,3 +73,11 @@ class BadArchiveError(MoonlitError):
     """Input ``.pyz`` is not a valid moonlit archive (exit 12)."""
 
     exit_code = 12
+
+
+class PythonBundleError(MoonlitError):
+    """``--bundle-python`` failure: ``uv python install`` non-zero, or the
+    resulting install dir doesn't have exactly one distribution child (D21c).
+    """
+
+    exit_code = 13

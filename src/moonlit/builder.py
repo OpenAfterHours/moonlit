@@ -40,6 +40,7 @@ from .errors import (
     NotAWorkspaceError,
     OutputExistsError,
     OutputNotWritableError,
+    PythonBundleError,
     UnknownPackageError,
     WheelArtifactError,
 )
@@ -65,6 +66,11 @@ class BuildConfig:
     # build host's. Stamped into env.json's `python_version` for the runtime
     # mismatch check (spec 03 §2 step 4a).
     python_version: str | None = None
+    # D21: when True, embed a Python interpreter under `_python/` in the zip
+    # body so end-users without Python installed can still run the .exe. The
+    # launcher (D22) unpacks it on first run and dispatches it. Only valid
+    # together with windows_exe=True; the CLI enforces this (invariant I13).
+    bundle_python: bool = False
 
 
 @dataclass(frozen=True)
@@ -73,6 +79,18 @@ class _Target:
 
     name: str
     directory: Path
+
+
+@dataclass(frozen=True)
+class _BundledPython:
+    """Step 8.5 result: where the bundled Python tree was installed plus its
+    cross-language fingerprint (D21/D22). Threaded through env_dict + archive.
+    """
+
+    dist_root: Path
+    fingerprint: str
+    arcname_prefix: str  # always "_python/" in v1; kept explicit for clarity.
+    relative_python_exe: str  # cache-relative location of python.exe.
 
 
 _ENTRY_POINT_SIDE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
@@ -107,6 +125,10 @@ def build(config: BuildConfig) -> int:
 def _validate_config(config: BuildConfig) -> None:
     if (config.entry_point is None) == (config.console_script is None):
         raise InternalError("BuildConfig must have exactly one of entry_point or console_script")
+    if config.bundle_python and not config.windows_exe:
+        # D21 / invariant I13: enforced by the CLI as a usage error; raised here
+        # for direct BuildConfig callers (tests, future programmatic API).
+        raise InternalError("BuildConfig.bundle_python requires windows_exe=True")
 
 
 def _select_target(workspace_obj: workspace.Workspace | None, config: BuildConfig) -> _Target:
@@ -262,10 +284,14 @@ def _run_pipeline(
             show_duration=False,
         )
 
-    env_dict = _build_env_dict(target, build_id, entry_point, config)
+    # Step 8.5 (D21): bundled-Python install runs strictly AFTER compute_build_id
+    # so the app's cache key cannot drift on a uv-shipped CPython patch bump.
+    bundled = _install_bundled_python(config, tmp_root) if config.bundle_python else None
+
+    env_dict = _build_env_dict(target, build_id, entry_point, config, bundled)
 
     with Step("writing archive", verbosity=verbosity) as step:
-        entry_count = _write_archive_atomically(config, staging, env_dict)
+        entry_count = _write_archive_atomically(config, staging, env_dict, bundled)
         # D19d: skip the POSIX exec-bit chmod for windows_exe mode — a `.exe`
         # doesn't need it, and the file is normally written to a Windows-style
         # filesystem anyway.
@@ -363,13 +389,34 @@ def _resolve_entry_point(config: BuildConfig, site_packages: Path) -> str:
     return value
 
 
+def _install_bundled_python(config: BuildConfig, tmp_root: Path) -> _BundledPython:
+    """Run step 8.5 (D21): install Python into the build tempdir, locate
+    ``python.exe`` at its dist root, compute the cross-language fingerprint.
+    """
+    install_dir = tmp_root / "python"
+    install_dir.mkdir(parents=True, exist_ok=True)
+    version = config.python_version or f"{sys.version_info.major}.{sys.version_info.minor}"
+    dist_root = resolver.python_install(install_dir, version=version, verbosity=config.verbosity)
+    python_exe = dist_root / "python.exe"
+    if not python_exe.is_file():
+        raise PythonBundleError(f"python.exe not found in bundled distribution: {python_exe}")
+    fingerprint = hashing.compute_python_fingerprint(dist_root)
+    return _BundledPython(
+        dist_root=dist_root,
+        fingerprint=fingerprint,
+        arcname_prefix="_python/",
+        relative_python_exe="python.exe",
+    )
+
+
 def _build_env_dict(
     target: _Target,
     build_id: str,
     entry_point: str,
     config: BuildConfig,
+    bundled: _BundledPython | None,
 ) -> dict:
-    return {
+    env: dict = {
         "schema_version": 1,
         "name": target.name,
         "build_id": build_id,
@@ -385,14 +432,27 @@ def _build_env_dict(
             config.python_version or f"{sys.version_info.major}.{sys.version_info.minor}"
         ),
     }
+    if bundled is not None:
+        # spec 05 §3.9: optional additive field; no schema_version bump.
+        env["bundled_python"] = {
+            "prefix": bundled.arcname_prefix,
+            "relative_python_exe": bundled.relative_python_exe,
+            "fingerprint": bundled.fingerprint,
+        }
+    return env
 
 
-def _write_archive_atomically(config: BuildConfig, staging: Path, env_dict: dict) -> int:
+def _write_archive_atomically(
+    config: BuildConfig,
+    staging: Path,
+    env_dict: dict,
+    bundled: _BundledPython | None = None,
+) -> int:
     """Write the archive via a temp-then-rename dance (D15). Returns entry count."""
     output_path = config.output_path.resolve(strict=False)
     tmp_out = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
     try:
-        entry_count = _create_archive(tmp_out, staging, env_dict, config)
+        entry_count = _create_archive(tmp_out, staging, env_dict, config, bundled)
         os.replace(tmp_out, output_path)
         return entry_count
     finally:
@@ -404,13 +464,21 @@ def _write_archive_atomically(config: BuildConfig, staging: Path, env_dict: dict
                 pass
 
 
-def _create_archive(tmp_out: Path, staging: Path, env_dict: dict, config: BuildConfig) -> int:
+def _create_archive(
+    tmp_out: Path,
+    staging: Path,
+    env_dict: dict,
+    config: BuildConfig,
+    bundled: _BundledPython | None = None,
+) -> int:
     """Write the archive per spec 02 §3 step 9. Returns total zip-entry count.
 
     Output shape dispatches on ``config.windows_exe`` (D19): default mode
     writes ``<shebang line><zip body>``; windows-exe mode writes
-    ``<launcher PE bytes><shebang line><zip body>``. The trailing zip body is
-    byte-identical between modes (invariant I11).
+    ``<launcher PE bytes><shebang line><zip body>``. The non-bundled zip body
+    is byte-identical between modes (invariant I11). When ``bundled`` is set
+    (D21), the additional ``_python/*`` entries are interleaved between
+    ``__main__.py`` and ``env.json`` (invariant I11b).
     """
     site_packages = staging / "site-packages"
     env_payload = _serialize_env_json(env_dict)
@@ -435,13 +503,42 @@ def _create_archive(tmp_out: Path, staging: Path, env_dict: dict, config: BuildC
             # Step 9.7: rendered __main__.py.
             zf.writestr("__main__.py", main_py_bytes)
             entry_count += 1
-            # Step 9.8: env.json.
+            # Step 9.8 (D21): bundled Python tree. Sorted on UTF-8 bytes so
+            # the launcher's central-directory walk derives the same per-entry
+            # order when recomputing the fingerprint.
+            if bundled is not None:
+                for src_file, arcname in _iter_bundled_python_files(
+                    bundled.dist_root, bundled.arcname_prefix
+                ):
+                    with open(src_file, "rb") as f:
+                        zf.writestr(arcname, f.read())
+                    entry_count += 1
+            # Step 9.9: env.json (last so readers find it without scanning past
+            # the large _python/ segment when seeking from the central
+            # directory backwards).
             zf.writestr("env.json", env_payload)
             entry_count += 1
-        # Step 9.9: flush + fsync + close.
+        # Step 9.10: flush + fsync + close.
         fp.flush()
         os.fsync(fp.fileno())
     return entry_count
+
+
+def _iter_bundled_python_files(dist_root: Path, arcname_prefix: str) -> Iterator[tuple[Path, str]]:
+    """Yield (source_path, arcname) for each file under dist_root, in the same
+    lexicographic-on-UTF-8-bytes order the launcher uses to recompute the
+    fingerprint (spec 02 §4a).
+    """
+    pairs: list[tuple[bytes, Path, str]] = []
+    for src in dist_root.rglob("*"):
+        if not src.is_file():
+            continue
+        rel = src.relative_to(dist_root).as_posix()
+        arcname = arcname_prefix + rel
+        pairs.append((arcname.encode("utf-8"), src, arcname))
+    pairs.sort(key=lambda t: t[0])
+    for _, src, arcname in pairs:
+        yield src, arcname
 
 
 def _iter_staging_files(

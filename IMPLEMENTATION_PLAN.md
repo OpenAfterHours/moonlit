@@ -183,6 +183,7 @@ Cache root on Windows is `%LOCALAPPDATA%\moonlit` (not `~/.moonlit`) to avoid bl
 | Entry-point string unparseable | `BadEntryPointError` | 6 |
 | `-c name` not in any installed dist | `ConsoleScriptNotFoundError` | 6 |
 | Output exists, no `--force` | `OutputExistsError` | 7 |
+| `--bundle-python`: `uv python install` failure or unexpected install-dir shape | `PythonBundleError` | 13 |
 
 `KeyboardInterrupt` → exit 130, no traceback. Tracebacks only with `--verbose`.
 
@@ -259,4 +260,4 @@ Unit tests cover: workspace parsing/validation, build_id determinism, resolver s
 
 ## Follow-ups (post-MVP, explicitly out of scope)
 
-`--reproducible` (zeroed mtimes, sorted entries, `SOURCE_DATE_EPOCH`) · `--compile-pyc` · `--no-modify` hash verification · `--preamble` · `--extend-pythonpath` · `--site-packages` (extra dirs to bundle) · `moonlit info <pyz>` subcommand · `--windows-exe` launcher · real `flock`/`msvcrt` locking · cross-interpreter builds.
+`--reproducible` (zeroed mtimes, sorted entries, `SOURCE_DATE_EPOCH`) · `--compile-pyc` · `--no-modify` hash verification · `--preamble` · `--extend-pythonpath` · `--site-packages` (extra dirs to bundle) · `moonlit info <pyz>` subcommand · `--windows-exe` launcher · `--bundle-python` (D21/D22, Windows phase 1) · real `flock`/`msvcrt` locking · cross-interpreter builds.

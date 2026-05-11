@@ -73,6 +73,16 @@ For `--windows-exe` builds, combining `--python-version <X.Y>` with the default 
 
 Multi-version-in-one-artifact (one `.pyz` that runs on multiple Pythons) is **not** supported; build one artifact per target version.
 
+### Bundling Python in the `.exe` (Windows)
+
+If your recipients don't have Python installed at all, add `--bundle-python` to a `--windows-exe` build. moonlit asks `uv python install` for the matching CPython (python-build-standalone), packs it into the `.exe` under `_python/`, and the prepended launcher unpacks it on first run to `%LOCALAPPDATA%\moonlit\python\<fingerprint>\` before dispatching it:
+
+```sh
+uv run moonlit build --windows-exe --bundle-python -e myapp:main -o myapp.exe
+```
+
+The produced `.exe` weighs ~30 MiB more than its non-bundled sibling (the embedded CPython) but runs on a Python-free Windows box. The bundled interpreter is launched with `-I` (isolated mode) so nothing on the recipient's `PATH` or user-site can bleed in. Phase 1 is Windows-only; POSIX bundles are out of scope.
+
 ### Build output
 
 Default mode shows per-step progress on stderr — a Braille spinner per step on TTYs (`⠋ freezing dependencies (uv export)` → `✓ frozen · 87 packages · 0.7s`), or plain `→`/`✓` lines when stderr is not a TTY (CI logs, file redirect, pipe). The spec-frozen success line `wrote <path> (<size>, <N> entries)` always lands on stdout. `-q`/`--quiet` suppresses stderr; `-v`/`--verbose` additionally echoes `+ uv <argv>` (POSIX-shlex format) before each `uv` call.
@@ -154,6 +164,7 @@ tests/
 | Cross-platform caching (`%LOCALAPPDATA%`, `~/.moonlit`) | done |
 | `MOONLIT_ROOT`, `MOONLIT_FORCE_EXTRACT`, `MOONLIT_ENTRY_POINT`, `MOONLIT_DEBUG` | done |
 | `--windows-exe` native launcher | done |
+| `--bundle-python` (embed CPython in the `.exe`, Windows phase 1) | done |
 | Real `flock`/`msvcrt` locking | done |
 | `moonlit info <pyz>` subcommand | done |
 | `--python-version` cross-interpreter builds | done |
@@ -162,6 +173,7 @@ tests/
 | `--compile-pyc` | deferred |
 | `--no-modify` integrity verification | deferred |
 | `--python-platform` (cross-OS / cross-arch builds) | deferred |
+| `--bundle-python` on POSIX (Linux/macOS launcher binaries) | deferred |
 | Multi-version-in-one-artifact (single `.pyz` that runs on multiple Pythons) | deferred |
 
 ## Contributing

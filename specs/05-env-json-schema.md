@@ -21,6 +21,7 @@
 | `moonlit_version` | string | yes      | non-empty; PEP 440 (informational)              | tooling                          |
 | `python_shebang`  | string | yes      | non-empty; no `\n`; no leading `#!`             | tooling                          |
 | `python_version`  | string | no       | `^\d+\.\d+$` (major.minor only) — see §3.8      | bootstrap, tooling               |
+| `bundled_python`  | object | no       | sub-schema — see §3.9                           | launcher, bootstrap, tooling     |
 
 "Non-empty" means `len(s) > 0`. Whitespace-only is non-empty by this definition; that is accepted and not a producer error.
 
@@ -52,6 +53,18 @@ The `re.IGNORECASE` flag is mandatory. Without it, all-lowercase names (e.g. `my
 
 3.8 `python_version` (v1-optional) — must match `^\d+\.\d+$` when present, e.g. `"3.13"`. Stores the **target** Python's `major.minor` and matches the `cp<X><Y>` ABI tag of every wheel uv stages. Source-of-truth at build time: `BuildConfig.python_version` (set when the user passes `--python-version`, D20 cross-interpreter builds), falling back to the build host's `sys.version_info.major.minor`. The bootstrap compares this against the runtime interpreter's major.minor and exits 1 with a "built for X.Y, running A.B" message on mismatch — surfacing the real cause of the otherwise-mysterious `ModuleNotFoundError: No module named '<pkg>._core'` that occurs when a wheel's `.pyd` is silently skipped for ABI-tag mismatch. When the field is absent (older archives produced before this field's introduction) the bootstrap skips the check.
 
+3.9 `bundled_python` (v1-optional, D21) — when present, the archive ships a Python interpreter under the named `prefix` in the zip body. The Windows launcher (D22) extracts that subtree on first run and dispatches it. Sub-schema:
+
+| Sub-field              | Type   | Constraint                                                              |
+|------------------------|--------|-------------------------------------------------------------------------|
+| `prefix`               | string | non-empty; ends with `"/"`. v1 producers always emit `"_python/"`.      |
+| `relative_python_exe`  | string | non-empty; relative POSIX path under `prefix`. v1: `"python.exe"`.       |
+| `fingerprint`          | string | `^[0-9a-f]{64}$` (lowercase hex SHA-256).                               |
+
+The `fingerprint` is computed per spec 02 §4a: SHA-256 over sorted-on-UTF-8-bytes `(arcname, crc32_le)` pairs for every entry whose name starts with `prefix`. **Producer and Rust launcher MUST agree on this value byte-for-byte** — the launcher derives it by walking the produced .exe's central directory and uses it as the per-Python cache key under `%LOCALAPPDATA%\moonlit\python\<fingerprint>\`. The bootstrap reads `bundled_python` for two purposes: (a) to surface the bundled state via `moonlit info`, and (b) to skip the `python_version` mismatch check when the running interpreter is the launcher-dispatched bundled one (signaled via the `MOONLIT_BUNDLED_PYTHON` env var, set by the launcher to `<fingerprint>` — see spec 03 §11).
+
+When `bundled_python` is absent, the archive ships no interpreter and the launcher (if present) falls back to its baked shebang (D19c). Older archives produced before this field's introduction have it absent — forward-compatible per D9.
+
 ## 4. Validation algorithm (D8, consumer)
 
 Bootstrap and tooling validate in this exact order. The first failure exits the bootstrap with code 1 (per D3 runtime enumeration); each step has the exact error message shown:
@@ -66,6 +79,7 @@ Bootstrap and tooling validate in this exact order. The first failure exits the 
 8. Each required field has the correct JSON type (per Section 2) — `"env.json: field '<field>' has wrong type (expected <T>)"`. JSON `null` for any required field is reported here, since `None` is not the expected type.
 9. Each required field passes its format check (Section 3) — `"env.json: field '<field>' failed validation"`.
 10. If `python_version` is present, validate its type (`"env.json: field 'python_version' has wrong type (expected string)"`) and format (`"env.json: field 'python_version' failed validation"`). When absent, skip — the field is optional.
+11. If `bundled_python` is present, validate its shape (§3.9): must be an object, each sub-field present, types and formats correct. Errors use the same `"env.json: field '<path>' has wrong type (expected <T>)"` and `"env.json: field '<path>' failed validation"` patterns, with `<path>` such as `bundled_python.fingerprint`. When absent, skip.
 
 Duplicate keys: `json.loads` silently keeps the last occurrence per stdlib semantics. v1 accepts this and does not install an `object_pairs_hook` to detect it. Documented, not enforced.
 
@@ -137,6 +151,9 @@ The example terminates with a single `\n` byte not shown above.
 | `python_version` present but non-string           | 10   | 1              | `env.json: field 'python_version' has wrong type (expected string)`                           |
 | `python_version` present but bad format           | 10   | 1              | `env.json: field 'python_version' failed validation`                                          |
 | `python_version` differs from runtime major.minor | n/a  | 1              | `this archive was built for Python <X.Y>, but you are running Python <A.B>; ...` (spec 03)    |
+| `bundled_python` present but not an object        | 11   | 1              | `env.json: field 'bundled_python' has wrong type (expected object)`                           |
+| `bundled_python` sub-field missing                | 11   | 1              | `env.json: field 'bundled_python.<sub>' missing`                                              |
+| `bundled_python.fingerprint` malformed            | 11   | 1              | `env.json: field 'bundled_python.fingerprint' failed validation`                              |
 | Duplicate keys in JSON source                     | 3*   | 0 (accepted)   | last-wins per `json.loads`; not detected                                                      |
 | Unknown extra field                               | n/a  | 0 (accepted)   | ignored (D9)                                                                                  |
 

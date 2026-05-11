@@ -37,6 +37,25 @@ _ENTRY_POINT_SIDE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]
 # python_version: "<major>.<minor>" only (matches the cp<X><Y> wheel ABI tag).
 _PYTHON_VERSION = re.compile(r"^\d+\.\d+$")
 
+# bundled_python sub-field formats (spec 05 §3.9, D21).
+_BUNDLED_FINGERPRINT = re.compile(r"^[0-9a-f]{64}$")
+_BUNDLED_SUBFIELDS: tuple[str, ...] = ("prefix", "relative_python_exe", "fingerprint")
+
+
+@dataclass(frozen=True)
+class BundledPython:
+    """v1-optional sub-object of env.json (spec 05 §3.9, D21).
+
+    Present when the archive ships a Python interpreter under ``prefix`` in
+    the zip body. The Windows launcher (D22) is the primary consumer; the
+    bootstrap reads it to skip the runtime version-mismatch check when running
+    under the launcher-dispatched bundled interpreter.
+    """
+
+    prefix: str
+    relative_python_exe: str
+    fingerprint: str
+
 
 @dataclass(frozen=True)
 class Environment:
@@ -50,6 +69,9 @@ class Environment:
     # Optional v1 field per spec 05 §7. Absent when an older moonlit produced
     # the archive; the bootstrap skips the version check in that case.
     python_version: str | None = None
+    # v1-optional per spec 05 §3.9 / D21. Present when --bundle-python was set
+    # at build time.
+    bundled_python: BundledPython | None = None
 
 
 def load(archive_path: str | Path) -> Environment:
@@ -63,6 +85,7 @@ def load(archive_path: str | Path) -> Environment:
     _check_required_field_types(parsed)
     _check_field_formats(parsed)
     python_version = _read_optional_python_version(parsed)
+    bundled_python = _read_optional_bundled_python(parsed)
     return Environment(
         schema_version=parsed["schema_version"],
         name=parsed["name"],
@@ -72,6 +95,7 @@ def load(archive_path: str | Path) -> Environment:
         moonlit_version=parsed["moonlit_version"],
         python_shebang=parsed["python_shebang"],
         python_version=python_version,
+        bundled_python=bundled_python,
     )
 
 
@@ -193,3 +217,50 @@ def _read_optional_python_version(parsed: dict) -> str | None:
     if not _PYTHON_VERSION.fullmatch(value):
         raise EnvJsonError("env.json: field 'python_version' failed validation")
     return value
+
+
+def _read_optional_bundled_python(parsed: dict) -> BundledPython | None:
+    """Read and validate the optional ``bundled_python`` object (spec 05 §3.9).
+
+    Absent in archives produced before this field's introduction or without
+    ``--bundle-python``. When present, every sub-field must be a string with
+    the format pinned in §3.9.
+    """
+    if "bundled_python" not in parsed:
+        return None
+    obj = parsed["bundled_python"]
+    if not isinstance(obj, dict):
+        raise EnvJsonError("env.json: field 'bundled_python' has wrong type (expected object)")
+    for sub in _BUNDLED_SUBFIELDS:
+        if sub not in obj:
+            raise EnvJsonError(f"env.json: field 'bundled_python.{sub}' missing")
+        if not isinstance(obj[sub], str):
+            raise EnvJsonError(
+                f"env.json: field 'bundled_python.{sub}' has wrong type (expected string)"
+            )
+    prefix = obj["prefix"]
+    relative_python_exe = obj["relative_python_exe"]
+    fingerprint = obj["fingerprint"]
+    if not prefix or not prefix.endswith("/"):
+        raise EnvJsonError("env.json: field 'bundled_python.prefix' failed validation")
+    if not _is_valid_relative_posix(relative_python_exe):
+        raise EnvJsonError("env.json: field 'bundled_python.relative_python_exe' failed validation")
+    if not _BUNDLED_FINGERPRINT.fullmatch(fingerprint):
+        raise EnvJsonError("env.json: field 'bundled_python.fingerprint' failed validation")
+    return BundledPython(
+        prefix=prefix,
+        relative_python_exe=relative_python_exe,
+        fingerprint=fingerprint,
+    )
+
+
+def _is_valid_relative_posix(value: str) -> bool:
+    """Non-empty, forward-slash, no `..`, no backslashes, no leading slash."""
+    if not value:
+        return False
+    if "\\" in value:
+        return False
+    if value.startswith("/"):
+        return False
+    parts = value.split("/")
+    return all(p and p != ".." for p in parts)

@@ -226,6 +226,104 @@ def test_python_version_absent_skips_check(tmp_path: Path, monkeypatch: pytest.M
     assert bootstrap() == 0
 
 
+# ---------- D21 carve-out: launcher-set MOONLIT_BUNDLED_PYTHON ----------
+
+
+_BUNDLED_FP = "abc123" + "0" * 58  # arbitrary valid-shape 64-hex string.
+
+
+def _bundled_env(fp: str = _BUNDLED_FP) -> dict[str, Any]:
+    return {
+        "prefix": "_python/",
+        "relative_python_exe": "python.exe",
+        "fingerprint": fp,
+    }
+
+
+def test_version_check_skipped_when_bundled_env_var_matches(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """spec 03 §2 step 4a carve-out: the launcher signals the bundled path
+    via MOONLIT_BUNDLED_PYTHON; the bootstrap then trusts it's the bundled
+    interpreter and skips the wrong-Python check."""
+    monkeypatch.setenv("MOONLIT_BUNDLED_PYTHON", _BUNDLED_FP)
+    archive = make_pyz(
+        tmp_path / "app.pyz",
+        {
+            **valid_env_dict(),
+            "python_version": _wrong_minor_version(),
+            "bundled_python": _bundled_env(),
+        },
+        {"myapp.py": "def main():\n    return 0\n"},
+    )
+    set_argv(monkeypatch, archive)
+    # Despite python_version mismatch, the carve-out kicks in → exit 0.
+    assert bootstrap() == 0
+
+
+def test_version_check_runs_when_bundled_env_var_mismatched(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A forged or stale MOONLIT_BUNDLED_PYTHON value (different fingerprint)
+    must NOT bypass the version check."""
+    monkeypatch.setenv("MOONLIT_BUNDLED_PYTHON", "f" * 64)  # not the archive's fp.
+    archive = make_pyz(
+        tmp_path / "app.pyz",
+        {
+            **valid_env_dict(),
+            "python_version": _wrong_minor_version(),
+            "bundled_python": _bundled_env(),
+        },
+        {"myapp.py": "def main():\n    return 0\n"},
+    )
+    set_argv(monkeypatch, archive)
+    assert bootstrap() == 1
+    assert "built for Python" in capsys.readouterr().err
+
+
+def test_version_check_runs_when_bundled_env_var_absent(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Bundled-Python archive launched WITHOUT the launcher (e.g. via
+    `python app.exe` directly) keeps the strict version check — that path
+    isn't running the bundled interpreter, it's running the user's Python."""
+    monkeypatch.delenv("MOONLIT_BUNDLED_PYTHON", raising=False)
+    archive = make_pyz(
+        tmp_path / "app.pyz",
+        {
+            **valid_env_dict(),
+            "python_version": _wrong_minor_version(),
+            "bundled_python": _bundled_env(),
+        },
+        {"myapp.py": "def main():\n    return 0\n"},
+    )
+    set_argv(monkeypatch, archive)
+    assert bootstrap() == 1
+    assert "built for Python" in capsys.readouterr().err
+
+
+def test_bundled_env_var_ignored_when_no_bundled_python_in_archive(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The env var is meaningless without env.bundled_python — the strict
+    check must still fire."""
+    monkeypatch.setenv("MOONLIT_BUNDLED_PYTHON", _BUNDLED_FP)
+    archive = make_pyz(
+        tmp_path / "app.pyz",
+        {**valid_env_dict(), "python_version": _wrong_minor_version()},
+        {"myapp.py": "def main():\n    return 0\n"},
+    )
+    set_argv(monkeypatch, archive)
+    assert bootstrap() == 1
+    assert "built for Python" in capsys.readouterr().err
+
+
 # ---------- runner errors propagate with correct exit codes ----------
 
 

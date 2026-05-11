@@ -19,6 +19,7 @@ from moonlit.errors import (
     ExportError,
     InternalError,
     NoLockfileError,
+    PythonBundleError,
     StagingError,
     UvNotFoundError,
     WheelArtifactError,
@@ -391,6 +392,108 @@ def test_build_wheel_failure_raises_wheel_artifact_error(
     fake_run.stderr = "uv build: failure"
     with pytest.raises(WheelArtifactError, match="uv build"):
         resolver.build_wheel(tmp_path, tmp_path / "d")
+
+
+# ---------- python_install (D21) ----------
+
+
+def test_python_install_argv_shape(fake_run: _FakeRun, tmp_path: Path) -> None:
+    """D21b: `uv python install --install-dir <dir> --no-bin --no-registry <version>`."""
+    install_dir = tmp_path / "py"
+    install_dir.mkdir()
+    # Simulate uv writing the distribution dir under install_dir.
+    (install_dir / "cpython-3.13.7-windows-x86_64-none").mkdir()
+    dist = resolver.python_install(install_dir, version="3.13")
+    assert fake_run.calls[0][0] == [
+        "uv",
+        "python",
+        "install",
+        "--install-dir",
+        str(install_dir),
+        "--no-bin",
+        "--no-registry",
+        "3.13",
+    ]
+    assert dist == install_dir / "cpython-3.13.7-windows-x86_64-none"
+
+
+def test_python_install_uses_pinned_subprocess_kwargs(fake_run: _FakeRun, tmp_path: Path) -> None:
+    install_dir = tmp_path / "py"
+    install_dir.mkdir()
+    (install_dir / "cpython-3.13.7-windows-x86_64-none").mkdir()
+    resolver.python_install(install_dir, version="3.13")
+    kwargs = fake_run.calls[0][1]
+    assert kwargs["shell"] is False
+    assert kwargs["check"] is False
+    assert kwargs["capture_output"] is True
+    # env must be an os.environ-equivalent dict, not None.
+    assert isinstance(kwargs["env"], dict)
+
+
+def test_python_install_uv_binary_missing_raises_uv_not_found(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    fake_run.raises = FileNotFoundError("uv")
+    install_dir = tmp_path / "py"
+    install_dir.mkdir()
+    with pytest.raises(UvNotFoundError):
+        resolver.python_install(install_dir, version="3.13")
+
+
+def test_python_install_failure_raises_python_bundle_error(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    fake_run.returncode = 1
+    fake_run.stderr = "error: ..."
+    install_dir = tmp_path / "py"
+    install_dir.mkdir()
+    with pytest.raises(PythonBundleError, match="uv python install"):
+        resolver.python_install(install_dir, version="3.13")
+
+
+def test_python_install_zero_children_raises_python_bundle_error(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    # uv returned success but wrote nothing under install_dir.
+    install_dir = tmp_path / "py"
+    install_dir.mkdir()
+    with pytest.raises(PythonBundleError, match="distribution"):
+        resolver.python_install(install_dir, version="3.13")
+
+
+def test_python_install_multiple_children_raises_python_bundle_error(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    install_dir = tmp_path / "py"
+    install_dir.mkdir()
+    (install_dir / "cpython-3.13.7-windows-x86_64-none").mkdir()
+    (install_dir / "cpython-3.12.5-windows-x86_64-none").mkdir()
+    with pytest.raises(PythonBundleError, match="distribution"):
+        resolver.python_install(install_dir, version="3.13")
+
+
+def test_python_install_ignores_dotfile_sibling_dirs(fake_run: _FakeRun, tmp_path: Path) -> None:
+    """uv writes transactional state under `.temp/`; the discovery must look
+    past it (regression: a real `uv python install` left both ``.temp`` and
+    ``cpython-...`` and the discovery raised wrongly)."""
+    install_dir = tmp_path / "py"
+    install_dir.mkdir()
+    (install_dir / ".temp").mkdir()
+    (install_dir / ".cache").mkdir()
+    dist = install_dir / "cpython-3.13.7-windows-x86_64-none"
+    dist.mkdir()
+    assert resolver.python_install(install_dir, version="3.13") == dist
+
+
+def test_python_install_verbose_echoes_argv(
+    fake_run: _FakeRun, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    install_dir = tmp_path / "py"
+    install_dir.mkdir()
+    (install_dir / "cpython-3.13.7-windows-x86_64-none").mkdir()
+    resolver.python_install(install_dir, version="3.13", verbosity=1)
+    err = capsys.readouterr().err
+    assert err.startswith("+ uv python install ")
 
 
 # ---------- argv constructed only inside resolver (CLAUDE.md invariant) ----------
