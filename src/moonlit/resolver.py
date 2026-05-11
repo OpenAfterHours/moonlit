@@ -24,6 +24,7 @@ from .errors import (
     ExportError,
     InternalError,
     NoLockfileError,
+    PythonBundleError,
     StagingError,
     UvNotFoundError,
     WheelArtifactError,
@@ -159,6 +160,55 @@ def build_wheel(
     if proc.returncode != 0:
         stderr = (proc.stderr or "").strip()
         raise WheelArtifactError(f"uv build failed: {stderr}")
+
+
+def python_install(
+    install_dir: Path,
+    *,
+    version: str,
+    verbosity: int = 0,
+) -> Path:
+    """Run ``uv python install`` into ``install_dir`` (D21b, step 8.5).
+
+    Returns the resolved distribution root (the single child directory created
+    under ``install_dir``, e.g. ``.../cpython-3.13.7-windows-x86_64-none``).
+    The patch version is never hardcoded; we discover the dir name by listing
+    ``install_dir`` after a successful invocation.
+
+    Errors:
+
+    * ``UvNotFoundError`` if the ``uv`` binary is not on PATH.
+    * ``PythonBundleError`` on uv non-zero exit, or when the post-install
+      directory does not contain exactly one child distribution.
+    """
+    argv = [
+        "uv",
+        "python",
+        "install",
+        "--install-dir",
+        str(install_dir),
+        "--no-bin",
+        "--no-registry",
+        version,
+    ]
+
+    proc = _run_uv(argv, cwd=install_dir, verbosity=verbosity)
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        raise PythonBundleError(f"uv python install failed: {stderr}")
+
+    # uv may leave sibling state dirs such as `.temp/` (transactional scratch)
+    # alongside the distribution. Filter them out: python-build-standalone
+    # distributions never start with `.`.
+    children = [
+        p for p in sorted(install_dir.iterdir()) if p.is_dir() and not p.name.startswith(".")
+    ]
+    if len(children) != 1:
+        names = ", ".join(c.name for c in children) or "<none>"
+        raise PythonBundleError(
+            f"expected exactly one python distribution under {install_dir}; got: {names}"
+        )
+    return children[0]
 
 
 # ---------- internal subprocess wrapper ----------

@@ -4,7 +4,7 @@ Status: MVP. Normative for `moonlit.builder.build(BuildConfig)`. Build-time proc
 
 ## 1. Inputs
 
-`BuildConfig` (frozen dataclass): `project_root: Path`, `output_path: Path`, `entry_point: str | None`, `console_script: str | None`, `python_shebang: str`, `package: str | None`, `force: bool`, `verbosity: int`. Exactly one of `entry_point`/`console_script` is set (CLI enforces, exit 2 otherwise).
+`BuildConfig` (frozen dataclass): `project_root: Path`, `output_path: Path`, `entry_point: str | None`, `console_script: str | None`, `python_shebang: str`, `package: str | None`, `force: bool`, `verbosity: int`, `windows_exe: bool = False`, `python_version: str | None = None`, `bundle_python: bool = False`. Exactly one of `entry_point`/`console_script` is set (CLI enforces, exit 2 otherwise). `bundle_python` is only valid with `windows_exe = True`; the CLI rejects the combination (D21, invariant I13).
 
 `python_shebang` validation (rejected as exit 2 CLI usage error): ASCII only, no `\n`/`\r`/`\x00`, encoded length ≤ 127 bytes.
 
@@ -58,9 +58,11 @@ No `--reinstall-package`; no `--reinstall`. Each non-zero exit → `StagingError
 - Two or more matches → `ConsoleScriptNotFoundError` (6) with text `f"ambiguous console script '{name}'; declared in {files}"`.
 - One match → split on `:` to produce `entry_point = "module:attr"`. Malformed value → `BadEntryPointError` (6).
 
-**Step 8 — Build ID.** `compute_build_id(<staging>/site-packages)` (Section 4). Files outside `<staging>/site-packages/` (e.g. `<staging>/bin/` console-script wrappers) are not bundled in MVP and not hashed.
+**Step 8 — Build ID.** `compute_build_id(<staging>/site-packages)` (Section 4). Files outside `<staging>/site-packages/` (e.g. `<staging>/bin/` console-script wrappers) are not bundled in MVP and not hashed. Bundled-Python files (step 8.5 below) are deliberately NOT covered: `build_id` is the app's cache key, and patch-level upgrades to uv's CPython catalog must not invalidate the staged-app cache.
 
-**Step 9 — Archive assembly** (`builder.create_archive`). Output shape dispatches on `BuildConfig.windows_exe` per D19; the zip body (steps 9.5-9.8 below) is byte-identical between modes.
+**Step 8.5 — Bundled-Python install** (only if `BuildConfig.bundle_python`; D21). `resolver.python_install(<tmp>/python, version=…)` runs `uv python install --install-dir <tmp>/python --no-bin --no-registry <X.Y>` and returns the single distribution dir uv produced under `<tmp>/python` (e.g. `cpython-3.13.7-windows-x86_64-none/`). `<X.Y>` is `BuildConfig.python_version` when set, else `f"{sys.version_info.major}.{sys.version_info.minor}"`. A regular file at `<dist_root>/python.exe` MUST exist; absence → `PythonBundleError` (13). Then `compute_python_fingerprint(<dist_root>, arcname_prefix="_python/")` (Section 4) yields the 64-hex SHA-256 stamped into `env.json.bundled_python.fingerprint` and used by the launcher as its per-Python cache key. This step MUST run AFTER step 8 — `build_id` is computed before any `_python/` files exist, so this ordering is the falsifier for the "build_id is python-independent" invariant.
+
+**Step 9 — Archive assembly** (`builder.create_archive`). Output shape dispatches on `BuildConfig.windows_exe` per D19. The set of zip entries is byte-identical between non-bundled `.pyz` and `.exe` builds of the same flag set (I11); a `--bundle-python` build additionally writes `_python/*` entries and a `bundled_python` object in `env.json` (I11b).
 1. Pre-flight on `output_path`: parent directory must exist and be writable, else `OutputNotWritableError` (7); if path exists and is a directory or symlink → `OutputExistsError` (7); if path exists as a regular file and `not force` → `OutputExistsError` (7).
 2. `tmp_out = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")` (D15). Open `tmp_out` for binary write.
 3. **Prefix.** If `windows_exe` is set, write the launcher bytes for the host architecture (D19a) followed by `b"#!" + python_shebang.encode("ascii") + b"\n"`. Otherwise, write only the shebang line. Either way, the file pointer now sits exactly where the zip body begins.
@@ -68,8 +70,9 @@ No `--reinstall-package`; no `--reinstall`. Each non-zero exit → `StagingError
 5. Walk `<staging>/site-packages/` via `rglob("*")` filtering `is_file()`. For each file, `relpath = p.relative_to(<staging>/site-packages)` and write with `arcname = "site-packages/" + relpath.as_posix()` (D1). On POSIX, if the source file mode has `stat.S_IXUSR | S_IXGRP | S_IXOTH` set, set `ZipInfo.external_attr = (0o755 << 16)`; else default. Arcnames are guaranteed to be relative POSIX paths with no `..` segments by construction (rglob within staging) — zip-slip is impossible.
 6. Copy the `_bootstrap/` package via `importlib.resources.files("moonlit") / "_bootstrap"`, recursively writing each file as `_bootstrap/<relpath>.as_posix()`.
 7. Render `__main__.py` from `_templates/main_py.tmpl` with LF line endings on all platforms; write at arcname `__main__.py`.
-8. Write `env.json` at arcname `env.json` (UTF-8, no BOM).
-9. `fp.flush(); os.fsync(fp.fileno()); fp.close()`.
+8. **Only if `bundle_python` is set (D21):** walk the step-8.5 distribution dir via `rglob("*")` filtering `is_file()`. For each file, write at arcname `"_python/" + relpath.as_posix()` (lexicographic-on-UTF-8-bytes order — same sort the launcher's central-directory walker uses to recompute the fingerprint). Entries use `ZIP_DEFLATED` like the rest of the body; CRC32s recorded by `zipfile` match exactly what `zlib.crc32` produced over the source bytes, which is the cross-language contract.
+9. Write `env.json` at arcname `env.json` (UTF-8, no BOM). When `bundle_python` is set, the dict carries an additional `bundled_python` object (spec 05 §3.9).
+10. `fp.flush(); os.fsync(fp.fileno()); fp.close()`.
 
 **Step 10 — Finalize.** `os.replace(tmp_out, output_path)` (D15, atomic on POSIX and Windows). On POSIX, then `os.chmod(output_path, 0o755)` UNLESS `windows_exe` is set (D19d) — a `.exe` does not need POSIX exec bits. On Windows, no-op regardless. Tempdir from D17 is removed in the `finally` of `builder.build`. On any failure between Step 9.2 and Step 10, `finally` unlinks `tmp_out` if it exists; `output_path` is never partially written.
 
@@ -97,6 +100,32 @@ def compute_build_id(site_packages_root: Path) -> str:
         h.update(b"\0")
     return h.hexdigest()
 ```
+
+### 4a. Bundled-Python fingerprint (D21/D22 cross-language contract)
+
+When `--bundle-python` is set, the producer computes a fingerprint over what will become the `_python/*` zip entries; the Rust launcher must derive the same 64-character lowercase-hex value by walking the produced `.exe`'s central directory. The recipe is:
+
+```python
+def compute_python_fingerprint(python_root: Path, *, arcname_prefix: str = "_python/") -> str:
+    pairs: list[tuple[bytes, int]] = []
+    for p in python_root.rglob("*"):
+        if not p.is_file():
+            continue
+        rel = p.relative_to(python_root).as_posix()
+        arcname = (arcname_prefix + rel).encode("utf-8")
+        crc = zlib.crc32(p.read_bytes()) & 0xFFFFFFFF
+        pairs.append((arcname, crc))
+    pairs.sort(key=lambda t: t[0])  # lex byte sort, matches launcher
+    h = hashlib.sha256()
+    for arcname_bytes, crc in pairs:
+        h.update(arcname_bytes)
+        h.update(b"\0")
+        h.update(crc.to_bytes(4, "little"))
+        h.update(b"\0")
+    return h.hexdigest()
+```
+
+Equivalence with the launcher: every `_python/*` entry the launcher discovers in the central directory carries the same UTF-8-encoded filename and the same little-endian CRC32 that `zlib.crc32` (and `zipfile`) recorded on write. The sort is over the raw UTF-8 byte sequence (not Python `str` ordering — they diverge for non-ASCII paths, which python-build-standalone does not use in practice but the spec pins anyway). The CRC32 of each file is independent of the zip's compression method, so `ZIP_DEFLATED` writes do not perturb the fingerprint.
 
 Returns 64 lowercase hex. Forward slashes regardless of platform. `env.json` is written *after* this step, so its bytes never feed the hash.
 

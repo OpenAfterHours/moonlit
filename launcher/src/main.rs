@@ -26,6 +26,8 @@
 
 #![windows_subsystem = "console"]
 
+mod bundle;
+
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
@@ -67,6 +69,15 @@ fn run() -> Result<u32, String> {
     let self_path = self_path()?;
     let mut file =
         File::open(&self_path).map_err(|e| format!("cannot open self ({}): {e}", self_path.display()))?;
+    // D21/D22: bundled-Python path. The central directory is at the tail of
+    // the file regardless of any PE+shebang prefix, so we look there first.
+    // If the zip carries `_python/*` entries, we dispatch the bundled
+    // interpreter; otherwise we fall back to the historical shebang path.
+    if let Some(bundle) = bundle::detect_bundle(&mut file)? {
+        let cache_dir = bundle::bundled_cache_dir(&bundle.fingerprint)?;
+        bundle::ensure_extracted(&mut file, &bundle, &cache_dir)?;
+        return bundle::spawn_bundled_python(&cache_dir, &bundle.fingerprint, &self_path);
+    }
     let pe_end = find_pe_end(&mut file)?;
     let shebang_line = read_shebang_line(&mut file, pe_end)?;
     let (interpreter, extra_args) = parse_shebang(&shebang_line);
@@ -248,7 +259,7 @@ fn spawn_interpreter(
 ///   * wrap in `"..."` if the argument is empty or contains whitespace, `"`, etc.
 ///   * within quotes, double any backslashes that immediately precede a `"`,
 ///     and escape `"` itself as `\"`.
-fn build_cmdline_w(parts: &[&OsStr]) -> Vec<u16> {
+pub(crate) fn build_cmdline_w(parts: &[&OsStr]) -> Vec<u16> {
     let mut out: Vec<u16> = Vec::new();
     for (i, p) in parts.iter().enumerate() {
         if i > 0 {

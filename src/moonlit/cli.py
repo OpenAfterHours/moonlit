@@ -137,6 +137,13 @@ def cli(ctx: click.Context) -> None:
     ),
 )
 @click.option(
+    "--bundle-python",
+    "bundle_python",
+    is_flag=True,
+    default=False,
+    help="Embed a Python interpreter inside the .exe (requires --windows-exe). See D21.",
+)
+@click.option(
     "--force",
     "force",
     is_flag=True,
@@ -158,6 +165,7 @@ def build_cmd(
     dev_flag: bool,
     windows_exe: bool,
     python_version: str | None,
+    bundle_python: bool,
     force: bool,
     quiet: bool,
     verbose: bool,
@@ -170,6 +178,10 @@ def build_cmd(
         raise click.UsageError("--quiet and --verbose are mutually exclusive")
     if no_dev_flag and dev_flag:
         raise click.UsageError("--no-dev and --dev are mutually exclusive")
+    if bundle_python and not windows_exe:
+        # spec §3 rule 6 / D21 / invariant I13: bundled python is dispatched by
+        # the Windows launcher, so a bare .pyz output has nothing to dispatch it.
+        raise click.UsageError("--bundle-python requires --windows-exe")
     if windows_exe and not output_file.lower().endswith(".exe"):
         # spec §3 rule 5 / D19b: --windows-exe demands an .exe output suffix.
         raise click.UsageError("--windows-exe requires --output-file to end in .exe")
@@ -223,6 +235,7 @@ def build_cmd(
         verbosity=verbosity,
         windows_exe=windows_exe,
         python_version=python_version,
+        bundle_python=bundle_python,
     )
     sys.exit(run_build(config))
 

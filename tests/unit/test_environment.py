@@ -362,6 +362,95 @@ def test_python_version_bad_format_raises(tmp_path: Path, value: str) -> None:
         load(pyz)
 
 
+# ---------- step 11: optional bundled_python (spec 05 §3.9) ----------
+
+
+def _valid_bundled() -> dict[str, Any]:
+    return {
+        "prefix": "_python/",
+        "relative_python_exe": "python.exe",
+        "fingerprint": "0" * 64,
+    }
+
+
+def test_bundled_python_absent_is_none(tmp_path: Path) -> None:
+    pyz = make_pyz_with(tmp_path, valid_env())
+    assert load(pyz).bundled_python is None
+
+
+def test_bundled_python_valid_parses(tmp_path: Path) -> None:
+    env = {**valid_env(), "bundled_python": _valid_bundled()}
+    pyz = make_pyz_with(tmp_path, env)
+    bp = load(pyz).bundled_python
+    assert bp is not None
+    assert bp.prefix == "_python/"
+    assert bp.relative_python_exe == "python.exe"
+    assert bp.fingerprint == "0" * 64
+
+
+@pytest.mark.parametrize("value", [123, "string", None, [1, 2], True])
+def test_bundled_python_wrong_type_raises(tmp_path: Path, value: Any) -> None:
+    env = {**valid_env(), "bundled_python": value}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match="field 'bundled_python' has wrong type"):
+        load(pyz)
+
+
+@pytest.mark.parametrize("missing_key", ["prefix", "relative_python_exe", "fingerprint"])
+def test_bundled_python_missing_subfield_raises(tmp_path: Path, missing_key: str) -> None:
+    bp = _valid_bundled()
+    del bp[missing_key]
+    env = {**valid_env(), "bundled_python": bp}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match=rf"bundled_python\.{missing_key}"):
+        load(pyz)
+
+
+@pytest.mark.parametrize(
+    "fingerprint",
+    [
+        "",
+        "0" * 63,  # too short
+        "0" * 65,  # too long
+        "g" * 64,  # not hex
+        "0" * 32 + "A" * 32,  # uppercase rejected
+    ],
+)
+def test_bundled_python_bad_fingerprint_raises(tmp_path: Path, fingerprint: str) -> None:
+    bp = {**_valid_bundled(), "fingerprint": fingerprint}
+    env = {**valid_env(), "bundled_python": bp}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match=r"bundled_python\.fingerprint"):
+        load(pyz)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [
+        ("prefix", ""),
+        ("prefix", "_python"),  # missing trailing slash
+        ("relative_python_exe", ""),
+        ("relative_python_exe", "../escape.exe"),
+        ("relative_python_exe", "abs\\path.exe"),
+    ],
+)
+def test_bundled_python_bad_subfield_format_raises(tmp_path: Path, field: str, value: str) -> None:
+    bp = {**_valid_bundled(), field: value}
+    env = {**valid_env(), "bundled_python": bp}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match=rf"bundled_python\.{field}"):
+        load(pyz)
+
+
+@pytest.mark.parametrize("subfield", ["prefix", "relative_python_exe", "fingerprint"])
+def test_bundled_python_subfield_wrong_type_raises(tmp_path: Path, subfield: str) -> None:
+    bp = {**_valid_bundled(), subfield: 123}  # not a string
+    env = {**valid_env(), "bundled_python": bp}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match=rf"bundled_python\.{subfield}"):
+        load(pyz)
+
+
 # ---------- D8 ordering: earlier failures shadow later ones ----------
 
 

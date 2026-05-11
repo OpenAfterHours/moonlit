@@ -43,6 +43,7 @@ moonlit build [PROJECT] [flags]
 |       | `--dev` | flag | false | no | Opt in to dev-group deps. Mutually exclusive with `--no-dev`; passing both → exit 2. |
 |       | `--windows-exe` | flag | false | no | Produce a native Windows `.exe` (launcher + zipapp) instead of a `.pyz`. Requires `-o` to end in `.exe`; defaults `--python` to `python.exe` (or `py -<X.Y>` when `--python-version` is also set, see D20) if not explicitly set. See D19. |
 |       | `--python-version` | string | none (build host's `sys.version_info`) | no | Target Python `major.minor` for cross-interpreter builds (e.g. `3.12`). Threaded through every `uv` invocation as `--python-version` so wheels are tagged for that ABI; stamped into `env.json` as `python_version` for the runtime mismatch check. Format: `^\d+\.\d+$`. See D20. |
+|       | `--bundle-python` | flag | false | no | Embed a Python interpreter inside the `.exe` so end-users do not need Python installed. Requires `--windows-exe`. Fetched via `uv python install`; honors `--python-version` (defaults to build host's `major.minor`). See D21, D22. |
 |       | `--force` | flag | false | no | If `<output>` exists and is a regular file, overwrite it. Has no effect when the path does not exist. Does NOT cover non-file targets (see Section 5). |
 | `-q` | `--quiet` | flag | false | no | Suppress non-error stderr. |
 | `-v` | `--verbose` | flag | false | no | Echo `uv` invocations as `+ uv <argv>` on stderr (POSIX `shlex.quote` style on all platforms, for copy-paste consistency); show tracebacks on errors. |
@@ -98,7 +99,8 @@ The header-line format mirrors the `build` success line (Section 8). Fields are 
 3. `--no-dev` and `--dev` are mutually exclusive. Both → exit 2.
 4. `--package` requirement is determined by parsing PROJECT's `pyproject.toml`; presence/absence of `[tool.uv.workspace]` is authoritative. Mismatch → exit 5.
 5. `--windows-exe` requires `--output-file` to end in `.exe` (D19b). `moonlit build --windows-exe -o app.pyz` → exit 2. The check is `output_file.lower().endswith(".exe")` — the case-insensitive form covers user paths like `App.EXE` on Windows file systems.
-6. Environment variables prefixed `MOONLIT_` (D16) are RUNTIME-only. They are read by the bootstrap, not by `moonlit build`. Setting any of them while invoking the build is silently ignored.
+6. `--bundle-python` requires `--windows-exe` (D21). `moonlit build --bundle-python -e a:b -o app.pyz` → exit 2 with a usage message naming `--windows-exe`. Rationale: the bundled interpreter is unpacked and dispatched by the Windows launcher (D22); a bare `.pyz` has no launcher to do that.
+7. Environment variables prefixed `MOONLIT_` (D16) are RUNTIME-only. They are read by the bootstrap, not by `moonlit build`. Setting any of them while invoking the build is silently ignored.
 
 ## 4. Order of preflight checks
 
@@ -145,6 +147,7 @@ This table mirrors D3 exactly. Runtime exit codes are independent (see `specs/03
 | 10 | `uv build` wheel failure or wheel artifact issue | `WheelArtifactError` |
 | 11 | Internal invariant violation | `InternalError` |
 | 12 | Input archive is not a moonlit zipapp (used by `info`) | `BadArchiveError` |
+| 13 | Bundled-Python fetch or install failure (D21) | `PythonBundleError` |
 | 130 | SIGINT | — |
 
 `--version` failures (e.g. unreadable package metadata) are exit 1 (unhandled), not exit 0.
@@ -194,8 +197,10 @@ Every invariant has a CLI-observable falsifier (no need to inspect the produced 
 - **I8: Final-line format.** Falsifier: parse stdout against `^wrote .+ \(\d+(\.\d+)? (B|KiB|MiB|GiB), \d+ entries\)$`.
 - **I9: Help short-circuits validation.** Falsifier: `moonlit build --help` in a directory with no `pyproject.toml` → exit 0.
 - **I10: Unknown subcommand + `--help` still errors.** Falsifier: `moonlit nope --help` → exit 2.
-- **I11: `--windows-exe` zip-body parity (D19).** A `.pyz` and the `.exe` produced from the same project + flags contain the same set of zip entries with the same per-entry content bytes. Falsifier: build twice, open each as a `zipfile.ZipFile`, compare `namelist()` and `read(name)` for each entry — must match. (Byte-identical zip bodies are NOT contracted today: the standard library's `zipfile` embeds wall-clock mtimes. When `--reproducible` lands, I11 can tighten to byte-identity.)
+- **I11: `--windows-exe` zip-body parity (D19).** A `.pyz` and the `.exe` produced from the same project + same flag set contain the same set of zip entries with the same per-entry content bytes. The clause "same flag set" is load-bearing: `--bundle-python` adds a `_python/*` segment to the zip body and so falls under I11b instead. Falsifier (non-bundle mode): build twice with identical flags, open each as a `zipfile.ZipFile`, compare `namelist()` and `read(name)` for each entry — must match. (Byte-identical zip bodies are NOT contracted today: the standard library's `zipfile` embeds wall-clock mtimes. When `--reproducible` lands, I11 can tighten to byte-identity.)
+- **I11b: `--bundle-python` adds only `_python/` entries (D21).** A `--windows-exe --bundle-python` build and a `--windows-exe` build of the same project + same other flags have identical `site-packages/*`, `_bootstrap/*`, and `__main__.py` entry sets and per-entry content bytes; they differ only in (a) the presence of `_python/*` entries in the bundled build, and (b) the `bundled_python` object in `env.json`. Falsifier: build twice with the differing flag, diff the namelists — only `_python/*` should appear in the bundled build; for every other arcname `n`, `bundled.read(n) == nonbundled.read(n)` (excepting `env.json`, which has the new field).
 - **I12: `--windows-exe` suffix rule (D19b).** Falsifier: `moonlit build --windows-exe -e a:b -o app.pyz` → exit 2 with a usage message naming `.exe`.
+- **I13: `--bundle-python` requires `--windows-exe` (D21).** Falsifier: `moonlit build --bundle-python -e a:b -o app.pyz` → exit 2 with a usage message naming `--windows-exe`; `moonlit build --bundle-python -e a:b -o app.exe` (no `--windows-exe`) → same exit 2.
 
 ## 12. Stability
 
