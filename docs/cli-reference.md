@@ -15,7 +15,7 @@ moonlit [-V | --version] [-h | --help] <subcommand> [args...]
 
 Running `moonlit` with no subcommand and no flag prints the help to stderr and exits 2. Running `moonlit <unknown>` (with or without `--help`) prints `error: no such subcommand: <name>` to stderr and exits 2.
 
-The MVP defines exactly one subcommand: `build`.
+Subcommands: [`build`](#moonlit-build) (produce a `.pyz`/`.exe`) and [`info`](#moonlit-info) (inspect a built archive's `env.json`).
 
 ## `moonlit build`
 
@@ -38,6 +38,7 @@ moonlit build [PROJECT] -e <entry> | -c <script> -o <output> [flags]
 |  | `--dev` | flag | no | off | Opt in to dev-group dependencies. Mutually exclusive with `--no-dev`. |
 |  | `--windows-exe` | flag | no | off | Produce a native Windows `.exe` (small Rust launcher prepended to the same zip body) instead of a `.pyz`. Requires `-o` to end in `.exe`. The recipient still needs a Python interpreter on `PATH` or registered with `py.exe`. |
 |  | `--python-version` | string `<X.Y>` | no | build host's `sys.version_info.major.minor` | Target Python `major.minor` for cross-interpreter builds (e.g. `3.12`). Threads through every `uv` invocation as `--python <X.Y>` so wheels are tagged for that ABI; stamped into `env.json.python_version`. uv auto-fetches a managed standalone CPython if the requested version isn't locally installed. Format: `^\d+\.\d+$`. |
+|  | `--bundle-python` | flag | no | off | Embed a managed standalone CPython under `_python/` inside the produced artifact so recipients without a Python interpreter on `PATH` can still run it. Requires `--windows-exe`; the launcher unpacks the bundle on first run and dispatches it. uv fetches the interpreter for `--python-version` (or the build host's version if unset). Adds `bundled_python` to `env.json` (see [Runtime → env.json schema](runtime.md#envjson-schema)). |
 |  | `--force` | flag | no | off | Overwrite an existing regular-file output. Does **not** override a directory target. |
 | `-q` | `--quiet` | flag | no | off | Suppress progress output on stderr; the success line on stdout is preserved. |
 | `-v` | `--verbose` | flag | no | off | On error, append the full traceback to stderr. Mutually exclusive with `--quiet`. |
@@ -51,6 +52,7 @@ moonlit build [PROJECT] -e <entry> | -c <script> -o <output> [flags]
 - `--package` is required iff the project is a uv workspace → exit 5 on mismatch.
 - `--windows-exe` requires `--output-file` to end in `.exe` (case-insensitive) → exit 2.
 - `--python-version` must match `^\d+\.\d+$` (major.minor only) → exit 2.
+- `--bundle-python` requires `--windows-exe` → exit 2. (The launcher is what dispatches the embedded interpreter; a bare `.pyz` has nothing to dispatch it.)
 - When `--windows-exe` AND `--python-version` are set AND `-p` is at its default, the default shebang pivots from `python.exe` to `py -<X.Y>` so the recipient's PEP 397 launcher pins to the matching interpreter.
 - The `MOONLIT_*` environment variables are runtime-only; they are *ignored* during a build.
 
@@ -84,13 +86,15 @@ The CLI performs these checks in order; the first failure short-circuits with th
 | 9 | `uv pip install --target` failure | `StagingError` |
 | 10 | `uv build` wheel failure or wheel artifact issue | `WheelArtifactError` |
 | 11 | Internal invariant violation (a moonlit bug) | `InternalError` |
+| 12 | Input archive (for `moonlit info`) is not a valid moonlit `.pyz` | `BadArchiveError` |
+| 13 | `--bundle-python`: `uv python install` failed or the install dir's shape was unexpected | `PythonBundleError` |
 | 130 | SIGINT (Ctrl-C) | — |
 
 Build-time and runtime exit codes are independent enumerations; the runtime codes (0–3) live in [Runtime](runtime.md). The same numeric value can mean different things in the two namespaces.
 
 ### stdout / stderr semantics
 
-- **Default**: progress lines go to stderr; the final line `wrote <output> (<size>, <N> entries)` goes to stdout.
+- **Default**: progress lines go to stderr — one line per pipeline step with a brief result and elapsed time (e.g. `writing archive · wrote myapp.pyz · 1.3s total`). The final line `wrote <output> (<size>, <N> entries)` goes to stdout.
 - **`--quiet`**: stderr is suppressed; the stdout success line is preserved.
 - **`--verbose`**: on error, the full traceback follows the error line on stderr.
 - **Errors**: every error is a single line on stderr, formatted as `<ErrorClassName>: <message>`. With `--quiet`, errors are still emitted.
@@ -141,6 +145,36 @@ Produce a native Windows `.exe` pinned to Python 3.12 (shebang auto-pivots to `p
 
 ```sh
 moonlit build --windows-exe --python-version 3.12 -e myapp.cli:main -o myapp.exe
+```
+
+Produce a fully self-contained `.exe` that embeds a managed CPython under `_python/` so recipients don't need Python installed:
+
+```sh
+moonlit build --windows-exe --bundle-python --python-version 3.12 \
+    -e myapp.cli:main -o myapp.exe
+```
+
+## `moonlit info`
+
+```
+moonlit info <pyz> [--json]
+```
+
+Print the `env.json` manifest of a moonlit-built archive. `<pyz>` must resolve to an existing regular file.
+
+| Flag | Description |
+|---|---|
+| `--json` | Emit the raw `env.json` bytes to stdout with no header. Useful for piping to `jq`. |
+
+**Default output**: a one-line header `<path> (<size>, <N> entries)` followed by a sorted listing of the manifest's required fields (`build_id`, `built_at`, `entry_point`, `moonlit_version`, `name`, `python_shebang`, `schema_version`). The optional `python_version` and `bundled_python` fields are **not** included in the default listing today; use `--json` to see them.
+
+If the input is not a zipfile, or `env.json` is missing/malformed, exit 12 with `BadArchiveError: <reason>` on stderr.
+
+Examples:
+
+```sh
+moonlit info myapp.pyz
+moonlit info myapp.pyz --json | jq .python_version
 ```
 
 ## `python -m moonlit`

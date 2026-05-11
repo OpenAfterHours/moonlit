@@ -46,7 +46,7 @@ Inside the cache root:
 <cache_root>/
 ├── <cache_key>/                # Populated, atomic-replaced site-packages parent.
 │   └── site-packages/          # Contents of the .pyz's site-packages/.
-├── <cache_key>.lock            # Sentinel lock file (only present mid-extraction).
+├── <cache_key>.lock            # Persistent lock file (see "Fast path and slow path").
 └── .<cache_key>.tmp.<pid>/     # Staging dir for one in-progress extraction.
 ```
 
@@ -85,7 +85,7 @@ rm -rf <cache_root>/<cache_key>/
 
 The cache hit fast path is **unsynchronized** — readers of a populated cache do not contend with each other and do not acquire the lock. The bootstrap proceeds directly to `site.addsitedir()`.
 
-The slow path is the only mutator. It acquires `<cache_root>/<cache_key>.lock` via `os.open(..., O_CREAT | O_EXCL | O_RDWR)` with a 50ms poll interval and a 60-second wall-clock timeout. After acquiring, it re-checks the cache (a sibling may have just won the race), extracts to a per-pid tempdir, and atomically installs via:
+The slow path is the only mutator. It opens `<cache_root>/<cache_key>.lock` with `O_CREAT | O_RDWR` (no `O_EXCL` — the file is shared) and acquires an exclusive **OS-managed advisory lock** on the open file: `fcntl.flock(LOCK_EX | LOCK_NB)` on POSIX, `msvcrt.locking(LK_NBLCK, 1)` on Windows. Acquisition polls every 50 ms with a 60-second wall-clock timeout. After acquiring, it re-checks the cache (a sibling may have just won the race), extracts to a per-pid tempdir, and atomically installs via:
 
 1. Rename the existing `<cache_key>/` aside to `<cache_key>.old.<pid>/`.
 2. `os.replace(<tmp_dir>, <cache_key>/)`.
@@ -93,11 +93,13 @@ The slow path is the only mutator. It acquires `<cache_root>/<cache_key>.lock` v
 
 This protocol is correct on POSIX *and* Windows since Python 3.3.
 
-If extraction fails between rename and replace, the original `<cache_key>.old.<pid>/` is renamed back. If the process is hard-killed during extraction, the tempdir and lock file leak; recovery options are below.
+The lock file is **persistent by design** — closing the fd releases the OS lock, and the kernel releases it on process death, so the lock file itself doesn't need to be unlinked (and unlinking would race a concurrent opener, since `flock` is per open file description). A leftover `<cache_key>.lock` on disk is normal and does **not** indicate a stuck cache; only an unreleased OS lock would.
+
+If extraction fails between rename and replace, the original `<cache_key>.old.<pid>/` is renamed back. If the process is hard-killed during extraction, the OS releases the lock automatically; the per-pid tempdir may leak (it's safe to delete).
 
 ## Environment variables
 
-The bootstrap reads exactly four:
+The bootstrap reads exactly five:
 
 | Variable | Effect |
 |---|---|
@@ -105,10 +107,11 @@ The bootstrap reads exactly four:
 | `MOONLIT_FORCE_EXTRACT` | Force re-extraction even on a cache hit. **Does not** bypass the lock; only the existence-skip is suppressed. |
 | `MOONLIT_ENTRY_POINT` | Override `env.json.entry_point`. Useful for testing. Same `module:attr` syntax. |
 | `MOONLIT_DEBUG` | On a bootstrap-internal error, print the Python traceback after the `moonlit:` line. Does not affect user-code traceback printing (Python's default excepthook handles those unconditionally). |
+| `MOONLIT_BUNDLED_PYTHON` | Set by the Windows launcher (not the user) when it re-invokes the archive under a bundled interpreter — value is the `env.json.bundled_python.fingerprint`. The bootstrap matches it against the manifest to skip the [Python version check](#python-version-check) for that one nested invocation. A non-matching value falls through to the strict check. |
 
 "Truthy" means *present and non-empty after `os.environ.get(name, "")`*. The empty string is treated as unset; `MOONLIT_FORCE_EXTRACT=0` is **non-empty hence truthy** (surprising but consistent — the policy never special-cases "0", "false", or "no").
 
-Names beginning with `MOONLIT_` other than the four above are reserved for future versions and ignored today.
+Names beginning with `MOONLIT_` other than the five above are reserved for future versions and ignored today.
 
 ## Runtime exit codes
 
@@ -125,25 +128,20 @@ Other non-zero codes originate from user code via its own `sys.exit()` or the ma
 
 User-code exceptions propagate normally — Python's default `sys.excepthook` runs, the traceback prints unconditionally, and the process exits 1 from the unhandled exception.
 
-## Stale-lock recovery
+## Lock-timeout recovery
 
-If a previous run was killed mid-extraction, you may see a leftover `<cache_root>/<cache_key>.lock` file. The next invocation will poll for up to 60 seconds and then exit 3 with:
+Because the lock is OS-managed, a hard-killed extractor does **not** wedge the cache — the kernel releases the lock on process death and the next invocation acquires it immediately. The persistent `<cache_root>/<cache_key>.lock` file on disk is expected and is **not** itself a sign of trouble.
+
+A real timeout means another process is actively holding the lock for longer than 60 seconds (e.g. a very slow extraction on a contended volume, or a paused/stopped extractor process). In that case the next invocation exits 3 with:
 
 ```
-moonlit: lock acquisition timed out (60s) at <path>; remove this file or set MOONLIT_FORCE_EXTRACT=1
+moonlit: lock acquisition timed out (60.0s) at <path>; remove this file or set MOONLIT_FORCE_EXTRACT=1
 ```
 
-To recover, either remove the lock file:
+To recover:
 
-```sh
-rm <cache_root>/<cache_key>.lock
-```
-
-…or trigger a forced re-extraction in the next run:
-
-```sh
-MOONLIT_FORCE_EXTRACT=1 python ./app.pyz
-```
+- Find and resume/terminate the process holding the lock — once it dies or releases, the next run proceeds normally.
+- Or delete the lock file (`rm <cache_root>/<cache_key>.lock`). This is safe only if you're confident no live process holds the lock; doing so while a sibling is mid-extraction races a concurrent opener.
 
 `MOONLIT_FORCE_EXTRACT=1` does **not** bypass the lock; it only suppresses the existence-skip after the lock is acquired. Two concurrent forced runs serialize correctly: the second sees the first's installed tree, replaces it via the atomic protocol, and the first reader is unaffected because it already holds an open `addsitedir` reference.
 
@@ -173,7 +171,7 @@ For reference; the `env.json` produced by `moonlit build` looks like:
   "build_id": "<64 hex chars>",
   "built_at": "2026-05-09T15:23:01Z",
   "entry_point": "myapp.cli:main",
-  "moonlit_version": "0.2.0",
+  "moonlit_version": "0.3.0",
   "name": "myapp",
   "python_shebang": "/usr/bin/env python3",
   "python_version": "3.13",
@@ -181,4 +179,19 @@ For reference; the `env.json` produced by `moonlit build` looks like:
 }
 ```
 
-Validation is ordered (the first failure decides the error message): existence in archive, UTF-8 decode, JSON parse, top-level dict, `schema_version` is an integer (not bool) equal to `1`, all required fields present, types correct, format checks (PEP 508 name regex, lowercase 64-hex `build_id`, `module:attr` entry point, `%Y-%m-%dT%H:%M:%SZ` `built_at`, non-empty `moonlit_version`, non-empty `python_shebang` with no embedded newline and no leading `#!`). The optional `python_version` field, when present, must match `^\d+\.\d+$` (`major.minor` only); when absent the runtime version check is skipped — see [Python version check](#python-version-check).
+When the archive was built with `--bundle-python`, an additional `bundled_python` object is present:
+
+```json
+{
+  "...": "(fields above)",
+  "bundled_python": {
+    "prefix": "_python/",
+    "relative_python_exe": "python.exe",
+    "fingerprint": "<64 hex chars>"
+  }
+}
+```
+
+The sub-fields name where in the zip body the interpreter lives (`prefix`, must end in `/`), where `python.exe` sits relative to that prefix (`relative_python_exe`, a non-empty relative POSIX path), and a 64-char lowercase-hex fingerprint over the dist tree. The fingerprint is the value the launcher sets as `MOONLIT_BUNDLED_PYTHON` when re-invoking under the bundled interpreter.
+
+Validation is ordered (the first failure decides the error message): existence in archive, UTF-8 decode, JSON parse, top-level dict, `schema_version` is an integer (not bool) equal to `1`, all required fields present, types correct, format checks (PEP 508 name regex, lowercase 64-hex `build_id`, `module:attr` entry point, `%Y-%m-%dT%H:%M:%SZ` `built_at`, non-empty `moonlit_version`, non-empty `python_shebang` with no embedded newline and no leading `#!`). The optional `python_version` field, when present, must match `^\d+\.\d+$` (`major.minor` only); when absent the runtime version check is skipped — see [Python version check](#python-version-check). The optional `bundled_python` object, when present, must be a dict containing exactly the three string sub-fields above, each matching its format rule; the schema version is **not** bumped (it's an additive v1 field).
