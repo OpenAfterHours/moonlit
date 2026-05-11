@@ -4,6 +4,18 @@ site_name = "moonlit"
 site_description = "uv-powered Python zipapp builder."
 site_author = "Phil Harrison"
 
+# Top-right header link. `repo_name` is the visible link text; zensical
+# auto-derives "GitHub" when omitted, but we set it explicitly so the
+# overrides/partials/source.html partial can append `extra.version`.
+repo_url = "https://github.com/OpenAfterHours/moonlit"
+repo_name = "OpenAfterHours/moonlit"
+
+# Bump alongside pyproject.toml and src/moonlit/__init__.py at each release.
+# Surfaced in the top-right header next to the repo link via
+# overrides/partials/source.html.
+[project.extra]
+version = "0.3.0"
+
 # nav is explicit so the spec's intended ordering is preserved (CLAUDE.md
 # initial docs scope: index → getting-started → cli-reference → runtime).
 nav = [

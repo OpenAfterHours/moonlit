@@ -1,0 +1,16 @@
+{#-
+  Override of zensical's partials/source.html (the top-right header link)
+  that appends the current moonlit version after the repo name. The version
+  source of truth for the docs site is `[project.extra].version` in
+  zensical.toml — bump it at each release alongside pyproject.toml and
+  src/moonlit/__init__.py.
+-#}
+<a href="{{ config.repo_url }}" title="{{ lang.t('source') }}" class="md-source" data-md-component="source">
+  <div class="md-source__icon md-icon">
+    {% set icon = config.theme.icon.repo or "fontawesome/brands/git-alt" %}
+    {% include ".icons/" ~ icon ~ ".svg" %}
+  </div>
+  <div class="md-source__repository">
+    {{ config.repo_name }}{% if config.extra.version %} · v{{ config.extra.version }}{% endif %}
+  </div>
+</a>

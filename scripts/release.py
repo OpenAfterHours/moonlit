@@ -19,12 +19,14 @@ What it does (in order):
   3. Runs `uv run pytest` and `uv run ruff check` against the CURRENT code.
      If anything fails, no version is bumped and no files change.
   4. Runs `uv build` to verify packaging works at the current version.
-  5. Edits the three canonical version locations:
+  5. Edits the four canonical version locations:
        - pyproject.toml             (version = "X.Y.Z")
        - src/moonlit/__init__.py    (__version__ = "X.Y.Z")
        - overrides/home.html        (OpenAfterHours · vX.Y.Z subtitle)
+       - zensical.toml              ([project.extra].version = "X.Y.Z";
+                                    rendered in the docs top-right header)
   6. Runs `uv lock` so uv.lock reflects the new version.
-  7. Commits the four updated files as `chore: release vX.Y.Z`.
+  7. Commits the five updated files as `chore: release vX.Y.Z`.
   8. Creates an annotated tag `vX.Y.Z`.
   9. Prints the commands to run for actual release (push + publish).
 
@@ -50,9 +52,10 @@ RELEASE_BRANCH = "master"
 PYPROJECT = REPO_ROOT / "pyproject.toml"
 INIT_PY = REPO_ROOT / "src" / "moonlit" / "__init__.py"
 HOMEPAGE = REPO_ROOT / "overrides" / "home.html"
+ZENSICAL_TOML = REPO_ROOT / "zensical.toml"
 
 # Files touched by the bump. Used for `git add` and the diff summary.
-BUMP_FILES = [PYPROJECT, INIT_PY, HOMEPAGE, REPO_ROOT / "uv.lock"]
+BUMP_FILES = [PYPROJECT, INIT_PY, HOMEPAGE, ZENSICAL_TOML, REPO_ROOT / "uv.lock"]
 
 
 # ---------------------------------------------------------------- entry point
@@ -89,6 +92,7 @@ def main() -> int:
     bump_pyproject(target)
     bump_init_py(target)
     bump_homepage(target)
+    bump_zensical_toml(target)
     run("uv lock", description="uv lock")
 
     print()
@@ -243,6 +247,32 @@ def bump_homepage(target: Version) -> None:
         return
     HOMEPAGE.write_text(new_text, encoding="utf-8")
     print(f"  overrides/home.html    -> OpenAfterHours · v{target}")
+
+
+def bump_zensical_toml(target: Version) -> None:
+    """Update [project.extra].version in zensical.toml.
+
+    Rendered in the docs top-right header by overrides/partials/source.html
+    as "OpenAfterHours/moonlit · vX.Y.Z" next to the GitHub icon.
+    """
+    text = ZENSICAL_TOML.read_text(encoding="utf-8")
+    new_text, n = re.subn(
+        r'^version\s*=\s*"\d+\.\d+\.\d+"',
+        f'version = "{target}"',
+        text,
+        count=1,
+        flags=re.MULTILINE,
+    )
+    if n != 1:
+        # Not fatal — docs config may be restructured later. Warn loudly.
+        print(
+            '  WARNING: did not find a `version = "X.Y.Z"` line in zensical.toml '
+            "— skipping docs-version bump",
+            file=sys.stderr,
+        )
+        return
+    ZENSICAL_TOML.write_text(new_text, encoding="utf-8")
+    print(f'  zensical.toml          -> [project.extra].version = "{target}"')
 
 
 # -------------------------------------------------------------------- git ops
