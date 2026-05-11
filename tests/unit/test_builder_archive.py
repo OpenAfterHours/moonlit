@@ -376,7 +376,7 @@ def test_exec_bit_is_propagated_to_zipinfo(tmp_path: Path) -> None:
         force=False,
         verbosity=0,
     )
-    builder._create_archive(tmp_out, staging, env_dict, config)
+    builder._create_archive(tmp_out, staging, env_dict, config, None)
 
     with zipfile.ZipFile(tmp_out, "r") as zf:
         exec_info = zf.getinfo("site-packages/scripts/myscript")

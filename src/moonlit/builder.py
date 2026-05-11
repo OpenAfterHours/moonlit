@@ -446,7 +446,7 @@ def _write_archive_atomically(
     config: BuildConfig,
     staging: Path,
     env_dict: dict,
-    bundled: _BundledPython | None,
+    bundled: _BundledPython | None = None,
 ) -> int:
     """Write the archive via a temp-then-rename dance (D15). Returns entry count."""
     output_path = config.output_path.resolve(strict=False)
@@ -469,7 +469,7 @@ def _create_archive(
     staging: Path,
     env_dict: dict,
     config: BuildConfig,
-    bundled: _BundledPython | None,
+    bundled: _BundledPython | None = None,
 ) -> int:
     """Write the archive per spec 02 §3 step 9. Returns total zip-entry count.
 
