@@ -60,15 +60,6 @@ def _check_python_version(env: environment.Environment) -> None:
     # don't carry python_version; preserve the old behavior for those.
     if env.python_version is None:
         return
-    # D21 carve-out: when the launcher dispatched its own bundled interpreter,
-    # it sets MOONLIT_BUNDLED_PYTHON to the fingerprint declared in env.json.
-    # A matching value proves "I AM the bundled interpreter, not a wrong
-    # system Python" — skip the check. A bogus/stale value falls through to
-    # the strict check below (will fail at import time anyway if truly wrong).
-    if env.bundled_python is not None:
-        signal = os.environ.get("MOONLIT_BUNDLED_PYTHON", "")
-        if signal and signal == env.bundled_python.fingerprint:
-            return
     actual = f"{sys.version_info.major}.{sys.version_info.minor}"
     if actual == env.python_version:
         return

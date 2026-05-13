@@ -41,9 +41,9 @@ moonlit build [PROJECT] [flags]
 |       | `--package` | string | none | conditional | Workspace member to build. Required iff `[tool.uv.workspace]` exists in PROJECT's `pyproject.toml`; forbidden otherwise. Matched per D12 (PEP-503 normalized on both sides). |
 |       | `--no-dev` | flag | true (default behavior) | no | Asserts the default: dev-group deps are EXCLUDED from the build. Passing `--no-dev` is idempotent. |
 |       | `--dev` | flag | false | no | Opt in to dev-group deps. Mutually exclusive with `--no-dev`; passing both → exit 2. |
-|       | `--windows-exe` | flag | false | no | Produce a native Windows `.exe` (launcher + zipapp) instead of a `.pyz`. Requires `-o` to end in `.exe`; defaults `--python` to `python.exe` (or `py -<X.Y>` when `--python-version` is also set, see D20) if not explicitly set. See D19. |
+|       | `--windows-exe` | flag | false | no | Produce a native Windows `.exe` (launcher + zipapp) instead of a `.pyz`. Requires `-o` to end in `.exe` (unless `--bundle-python` is also set, in which case `--windows-exe` is a no-op); defaults `--python` to `python.exe` (or `py -<X.Y>` when `--python-version` is also set, see D20) if not explicitly set. See D19. |
 |       | `--python-version` | string | none (build host's `sys.version_info`) | no | Target Python `major.minor` for cross-interpreter builds (e.g. `3.12`). Threaded through every `uv` invocation as `--python-version` so wheels are tagged for that ABI; stamped into `env.json` as `python_version` for the runtime mismatch check. Format: `^\d+\.\d+$`. See D20. |
-|       | `--bundle-python` | flag | false | no | Embed a Python interpreter inside the `.exe` so end-users do not need Python installed. Requires `--windows-exe`. Fetched via `uv python install`; honors `--python-version` (defaults to build host's `major.minor`). See D21, D22. |
+|       | `--bundle-python` | flag | false | no | Produce a self-contained **directory bundle** that ships a managed CPython interpreter alongside the application zipapp and a thin launcher `.exe` (so recipients without Python on `PATH` can still run it). With this flag set, `-o` names the output directory; it MUST NOT end in `.exe` or `.pyz`. Fetched via `uv python install`; honors `--python-version`. See D21, D22. |
 |       | `--force` | flag | false | no | If `<output>` exists and is a regular file, overwrite it. Has no effect when the path does not exist. Does NOT cover non-file targets (see Section 5). |
 | `-q` | `--quiet` | flag | false | no | Suppress non-error stderr. |
 | `-v` | `--verbose` | flag | false | no | Echo `uv` invocations as `+ uv <argv>` on stderr (POSIX `shlex.quote` style on all platforms, for copy-paste consistency); show tracebacks on errors. |
@@ -98,8 +98,8 @@ The header-line format mirrors the `build` success line (Section 8). Fields are 
 2. `-q` and `-v` are mutually exclusive. Both (including the combined form `-qv`) → exit 2.
 3. `--no-dev` and `--dev` are mutually exclusive. Both → exit 2.
 4. `--package` requirement is determined by parsing PROJECT's `pyproject.toml`; presence/absence of `[tool.uv.workspace]` is authoritative. Mismatch → exit 5.
-5. `--windows-exe` requires `--output-file` to end in `.exe` (D19b). `moonlit build --windows-exe -o app.pyz` → exit 2. The check is `output_file.lower().endswith(".exe")` — the case-insensitive form covers user paths like `App.EXE` on Windows file systems.
-6. `--bundle-python` requires `--windows-exe` (D21). `moonlit build --bundle-python -e a:b -o app.pyz` → exit 2 with a usage message naming `--windows-exe`. Rationale: the bundled interpreter is unpacked and dispatched by the Windows launcher (D22); a bare `.pyz` has no launcher to do that.
+5. `--windows-exe` (without `--bundle-python`) requires `--output-file` to end in `.exe` (D19b). `moonlit build --windows-exe -e a:b -o app.pyz` → exit 2. The check is `output_file.lower().endswith(".exe")` — the case-insensitive form covers user paths like `App.EXE` on Windows file systems.
+6. `--bundle-python` produces a folder output (D21a). With `--bundle-python` set, `-o` MUST NOT end in `.exe` or `.pyz`; either suffix → exit 2 with a usage message explaining that the output is a directory. `--windows-exe` may also be set alongside `--bundle-python` — it is accepted as a no-op (the folder bundle always contains a launcher `.exe`).
 7. Environment variables prefixed `MOONLIT_` (D16) are RUNTIME-only. They are read by the bootstrap, not by `moonlit build`. Setting any of them while invoking the build is silently ignored.
 
 ## 4. Order of preflight checks
@@ -120,6 +120,8 @@ The CLI performs these in order; the first failure short-circuits with the liste
 
 Let `O = Path(--output-file).resolve(strict=False)`.
 
+**Single-file modes** (no `--bundle-python`):
+
 1. If `O.parent` does not exist or is not a directory → `OutputNotWritableError` ("output parent directory does not exist: <O.parent>"), exit 7.
 2. If `O.parent` is not writable (`os.access(O.parent, os.W_OK)` is false) → `OutputNotWritableError` ("output parent directory not writable: <O.parent>"), exit 7.
 3. If `O` exists and is a directory, FIFO, socket, block/char device, or symlink whose target is not a regular file → `OutputNotWritableError` ("output path is not a regular file: <O>"), exit 7. `--force` does NOT override this.
@@ -127,6 +129,15 @@ Let `O = Path(--output-file).resolve(strict=False)`.
 5. Otherwise: proceed. `/dev/null` and similar character devices are rejected by step 3.
 
 A `.pyz` currently locked by another process on Windows is detected at write time, not preflight; it surfaces during the atomic-replace step (D15) as `OutputNotWritableError`, exit 7.
+
+**Folder-bundle mode** (`--bundle-python`, per D21g):
+
+1. If `O.parent` does not exist or is not a directory → `OutputNotWritableError` ("output parent directory does not exist: <O.parent>"), exit 7.
+2. If `O.parent` is not writable → `OutputNotWritableError` ("output parent directory not writable: <O.parent>"), exit 7.
+3. If `O` exists and is NOT a directory (regular file, symlink, FIFO, …) → `OutputNotWritableError` ("output path is not a directory: <O>"), exit 7. `--force` does NOT override this.
+4. If `O` exists, is a directory, and does NOT match the moonlit-recognized bundle signature (`<basename>.exe`, `<basename>.pyz`, and `_python/python.exe` all present) → `OutputNotWritableError` ("output path is a directory but not a moonlit bundle: <O>"), exit 7. `--force` does NOT override this — refusing to overwrite an unrecognised directory prevents `--force` from acting like `rm -rf`.
+5. If `O` exists, is a moonlit-recognized bundle directory, and `--force` is unset → `OutputExistsError` ("output already exists; pass --force to overwrite: <O>"), exit 7.
+6. Otherwise: proceed.
 
 ## 6. Exit codes (build-time)
 
@@ -197,10 +208,10 @@ Every invariant has a CLI-observable falsifier (no need to inspect the produced 
 - **I8: Final-line format.** Falsifier: parse stdout against `^wrote .+ \(\d+(\.\d+)? (B|KiB|MiB|GiB), \d+ entries\)$`.
 - **I9: Help short-circuits validation.** Falsifier: `moonlit build --help` in a directory with no `pyproject.toml` → exit 0.
 - **I10: Unknown subcommand + `--help` still errors.** Falsifier: `moonlit nope --help` → exit 2.
-- **I11: `--windows-exe` zip-body parity (D19).** A `.pyz` and the `.exe` produced from the same project + same flag set contain the same set of zip entries with the same per-entry content bytes. The clause "same flag set" is load-bearing: `--bundle-python` adds a `_python/*` segment to the zip body and so falls under I11b instead. Falsifier (non-bundle mode): build twice with identical flags, open each as a `zipfile.ZipFile`, compare `namelist()` and `read(name)` for each entry — must match. (Byte-identical zip bodies are NOT contracted today: the standard library's `zipfile` embeds wall-clock mtimes. When `--reproducible` lands, I11 can tighten to byte-identity.)
-- **I11b: `--bundle-python` adds only `_python/` entries (D21).** A `--windows-exe --bundle-python` build and a `--windows-exe` build of the same project + same other flags have identical `site-packages/*`, `_bootstrap/*`, and `__main__.py` entry sets and per-entry content bytes; they differ only in (a) the presence of `_python/*` entries in the bundled build, and (b) the `bundled_python` object in `env.json`. Falsifier: build twice with the differing flag, diff the namelists — only `_python/*` should appear in the bundled build; for every other arcname `n`, `bundled.read(n) == nonbundled.read(n)` (excepting `env.json`, which has the new field).
+- **I11: `--windows-exe` zip-body parity (D19).** A `.pyz` and the `.exe` produced from the same project + same flag set contain the same set of zip entries with the same per-entry content bytes. Falsifier: build twice with otherwise-identical flags, open each as a `zipfile.ZipFile`, compare `namelist()` and `read(name)` for each entry — must match. (Byte-identical zip bodies are NOT contracted today: the standard library's `zipfile` embeds wall-clock mtimes. When `--reproducible` lands, I11 can tighten to byte-identity.)
+- **I11b: `--bundle-python` zipapp parity (D21).** In `--bundle-python` mode the produced `<basename>.pyz` (inside the bundle directory) byte-equals — at the zip-entry level — what a non-bundle build of the same project + same other flags would produce as its single `.pyz` output. Falsifier: build twice, one with `--bundle-python` and one without; open `<out>/<basename>.pyz` and `<out>.pyz` respectively as `zipfile.ZipFile`, diff the namelists (must match exactly) and `read(name)` for each entry (must match for every entry, including `env.json`).
 - **I12: `--windows-exe` suffix rule (D19b).** Falsifier: `moonlit build --windows-exe -e a:b -o app.pyz` → exit 2 with a usage message naming `.exe`.
-- **I13: `--bundle-python` requires `--windows-exe` (D21).** Falsifier: `moonlit build --bundle-python -e a:b -o app.pyz` → exit 2 with a usage message naming `--windows-exe`; `moonlit build --bundle-python -e a:b -o app.exe` (no `--windows-exe`) → same exit 2.
+- **I13: `--bundle-python` rejects `.exe` / `.pyz` suffix on `-o` (D21b).** Falsifier: `moonlit build --bundle-python -e a:b -o app.exe` → exit 2 with a usage message explaining the output is a directory; same for `-o app.pyz`. A bare directory path (with no extension or any other extension) is accepted.
 
 ## 12. Stability
 

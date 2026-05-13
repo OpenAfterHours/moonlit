@@ -1,22 +1,24 @@
-"""Pin builder behavior for ``--bundle-python`` (D21, spec 02 §3 step 8.5, I11b).
+"""Pin builder behavior for ``--bundle-python`` (D21 folder-bundle redesign).
 
 Mocks ``resolver.python_install`` to simulate uv writing a python-build-standalone
 distribution into the tempdir. Asserts:
 
-* The produced ``.exe`` zip body contains ``_python/<rel>`` entries.
-* All other entries (site-packages/*, _bootstrap/*, __main__.py) are
-  byte-identical to a non-bundled build of the same project (invariant I11b).
+* The produced output is a **directory** containing
+  ``<basename>.exe`` + ``<basename>.pyz`` + ``_python/`` (D21a).
+* The inner ``.pyz``'s zip-entry set is byte-identical to a non-bundle build
+  of the same project + same flags (invariant I11b).
+* The launcher inside the bundle byte-equals the vendored launcher for the
+  host architecture — no appended zip body.
+* The python-build-standalone tree is copied verbatim into ``_python/``.
 * ``build_id`` is byte-identical with or without ``--bundle-python`` —
-  bundled Python MUST NOT enter the app's cache key (D21d).
-* ``env.json`` carries a ``bundled_python`` object with the required keys and a
-  64-hex fingerprint.
-* The fingerprint computed by the producer matches the recipe a Rust launcher
-  would derive from the produced .exe's central directory (D21/D22 contract).
+  bundled Python MUST NOT enter the app's cache key (D21e).
+* ``env.json`` does NOT carry a ``bundled_python`` field (D21h).
+* ``--force`` rules: a moonlit-recognised bundle dir is overwritten;
+  anything else at the output path is refused.
 """
 
 import json
 import zipfile
-import zlib
 from pathlib import Path
 from typing import Any
 
@@ -52,8 +54,9 @@ def project_root(tmp_path: Path) -> Path:
 
 
 @pytest.fixture
-def output_path(tmp_path: Path) -> Path:
-    out = tmp_path / "out" / "app.exe"
+def bundle_path(tmp_path: Path) -> Path:
+    """Default bundle output: a directory at tmp/out/app (no extension)."""
+    out = tmp_path / "out" / "app"
     out.parent.mkdir(parents=True)
     return out
 
@@ -67,9 +70,9 @@ def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             "mypkg/cli.py": b"def main():\n    return 0\n",
         },
         "wheels_to_make": [("myapp-0.1.0-py3-none-any.whl", "myapp", "0.1.0")],
-        # Fake python-build-standalone tree. The launcher contract pins
-        # python.exe at the dist root; we also include Lib/site.py to exercise
-        # nested arcnames.
+        # Fake python-build-standalone tree. python.exe at the dist root is
+        # required by _install_bundled_python; nested paths exercise the
+        # _copy_python_tree recursion.
         "python_files": {
             "python.exe": b"FAKE_PYTHON_EXE_BYTES\x00\x01\x02",
             "python3.dll": b"FAKE_DLL\n",
@@ -125,9 +128,7 @@ def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
     return state
 
 
-def _make_config(
-    project_root: Path, output_path: Path, *, bundle_python: bool = True
-) -> BuildConfig:
+def _make_bundle_config(project_root: Path, output_path: Path) -> BuildConfig:
     return BuildConfig(
         project_root=project_root,
         output_path=output_path,
@@ -137,63 +138,169 @@ def _make_config(
         package=None,
         force=False,
         verbosity=0,
-        windows_exe=True,
+        windows_exe=False,
         python_version=None,
-        bundle_python=bundle_python,
+        bundle_python=True,
     )
 
 
-def _read_env_json(path: Path) -> dict:
-    with zipfile.ZipFile(path, "r") as zf:
+def _make_nonbundle_config(project_root: Path, output_path: Path) -> BuildConfig:
+    """Pyz output matching the inner .pyz semantics of the bundle (same shebang)."""
+    return BuildConfig(
+        project_root=project_root,
+        output_path=output_path,
+        entry_point="myapp.cli:main",
+        console_script=None,
+        python_shebang="python.exe",
+        package=None,
+        force=False,
+        verbosity=0,
+        windows_exe=False,
+        python_version=None,
+        bundle_python=False,
+    )
+
+
+def _read_env_json(pyz: Path) -> dict:
+    with zipfile.ZipFile(pyz, "r") as zf:
         return json.loads(zf.read("env.json").decode("utf-8"))
 
 
-def _launcher_recipe_fingerprint(path: Path, *, arcname_prefix: str = "_python/") -> str:
-    """Independent re-derivation of the cross-language fingerprint from the
-    produced archive's central directory — mirrors what the Rust launcher will
-    do (D21/D22). Distinct code path from ``hashing.compute_python_fingerprint``
-    on purpose so the test catches drift between producer and consumer.
-    """
-    import hashlib
-
-    h = hashlib.sha256()
-    with zipfile.ZipFile(path, "r") as zf:
-        infos = [i for i in zf.infolist() if i.filename.startswith(arcname_prefix)]
-    infos.sort(key=lambda i: i.filename.encode("utf-8"))
-    for info in infos:
-        h.update(info.filename.encode("utf-8"))
-        h.update(b"\0")
-        # CRC32 read from the central directory; little-endian 4-byte form.
-        h.update((info.CRC & 0xFFFFFFFF).to_bytes(4, "little"))
-        h.update(b"\0")
-    return h.hexdigest()
+# ---------- output is a directory with the three expected children (D21a) ----------
 
 
-# ---------- spec 02 §3 step 8.5: bundled Python lands as _python/ entries ----------
-
-
-def test_bundle_adds_python_prefix_entries(
-    project_root: Path, output_path: Path, fake_resolver: dict
+def test_bundle_output_is_a_directory(
+    project_root: Path, bundle_path: Path, fake_resolver: dict
 ) -> None:
-    """The expected files appear at _python/<rel> arcnames."""
-    config = _make_config(project_root, output_path, bundle_python=True)
-    build(config)
-    with zipfile.ZipFile(output_path, "r") as zf:
-        names = set(zf.namelist())
-    expected = {f"_python/{rel}" for rel in fake_resolver["python_files"]}
-    assert expected <= names
-    # python.exe at the prefix root (launcher contract).
-    assert "_python/python.exe" in names
+    build(_make_bundle_config(project_root, bundle_path))
+    assert bundle_path.is_dir(), "expected a folder bundle, not a file"
 
 
-def test_bundle_python_install_invoked_with_version(
-    project_root: Path, output_path: Path, fake_resolver: dict
+def test_bundle_directory_contains_expected_children(
+    project_root: Path, bundle_path: Path, fake_resolver: dict
 ) -> None:
-    """When --python-version is unset, version is host major.minor."""
+    build(_make_bundle_config(project_root, bundle_path))
+    basename = bundle_path.name
+    assert (bundle_path / f"{basename}.exe").is_file()
+    assert (bundle_path / f"{basename}.pyz").is_file()
+    assert (bundle_path / "_python").is_dir()
+    assert (bundle_path / "_python" / "python.exe").is_file()
+
+
+def test_bundle_directory_has_no_extra_children(
+    project_root: Path, bundle_path: Path, fake_resolver: dict
+) -> None:
+    build(_make_bundle_config(project_root, bundle_path))
+    basename = bundle_path.name
+    expected = {f"{basename}.exe", f"{basename}.pyz", "_python"}
+    actual = {p.name for p in bundle_path.iterdir()}
+    assert actual == expected
+
+
+def test_bundle_basename_drives_inner_filenames(
+    project_root: Path, tmp_path: Path, fake_resolver: dict
+) -> None:
+    """The directory's basename is reused for the launcher and the .pyz —
+    this is the contract the launcher's sibling probe relies on (D22a)."""
+    out = tmp_path / "out" / "shouter"
+    out.parent.mkdir(parents=True)
+    build(_make_bundle_config(project_root, out))
+    assert (out / "shouter.exe").is_file()
+    assert (out / "shouter.pyz").is_file()
+
+
+# ---------- launcher is shipped verbatim (no appended zip) ----------
+
+
+def test_bundle_launcher_byte_equals_vendored_launcher(
+    project_root: Path, bundle_path: Path, fake_resolver: dict
+) -> None:
+    """The .exe in the folder is the vendored ``t-<arch>.exe`` verbatim. Crucially
+    there is no appended zip — that's the AV-relevant property: it doesn't
+    look like a self-extracting archive."""
+    build(_make_bundle_config(project_root, bundle_path))
+    expected = builder._load_launcher_bytes()
+    actual = (bundle_path / f"{bundle_path.name}.exe").read_bytes()
+    assert actual == expected
+
+
+def test_bundle_launcher_is_not_a_zipfile(
+    project_root: Path, bundle_path: Path, fake_resolver: dict
+) -> None:
+    """The launcher .exe has no trailing zip body — `zipfile.is_zipfile`
+    must return False. This is the property Windows Defender ML scanners
+    care about: PE with no embedded archive ≠ self-extracting trojan."""
+    build(_make_bundle_config(project_root, bundle_path))
+    exe = bundle_path / f"{bundle_path.name}.exe"
+    assert not zipfile.is_zipfile(exe)
+
+
+# ---------- inner .pyz parity with non-bundle build (invariant I11b) ----------
+
+
+def test_inner_pyz_namelist_equals_nonbundle_namelist(
+    project_root: Path, tmp_path: Path, fake_resolver: dict
+) -> None:
+    """The inner .pyz's set of zip entries is identical to what a non-bundle
+    build of the same project + same flags produces (invariant I11b)."""
+    bundle_out = tmp_path / "out" / "app"
+    pyz_out = tmp_path / "out" / "plain.pyz"
+    bundle_out.parent.mkdir(parents=True)
+    build(_make_bundle_config(project_root, bundle_out))
+    build(_make_nonbundle_config(project_root, pyz_out))
+    inner = bundle_out / f"{bundle_out.name}.pyz"
+    with zipfile.ZipFile(inner) as zf_bundle, zipfile.ZipFile(pyz_out) as zf_plain:
+        assert set(zf_bundle.namelist()) == set(zf_plain.namelist())
+
+
+def test_inner_pyz_content_equals_nonbundle_except_envjson(
+    project_root: Path, tmp_path: Path, fake_resolver: dict
+) -> None:
+    """For every common arcname except ``env.json``, the inner .pyz bytes equal
+    the non-bundle .pyz bytes. ``env.json`` differs only in its ``built_at``
+    timestamp — the other fields are identical."""
+    bundle_out = tmp_path / "out" / "app"
+    pyz_out = tmp_path / "out" / "plain.pyz"
+    bundle_out.parent.mkdir(parents=True)
+    build(_make_bundle_config(project_root, bundle_out))
+    build(_make_nonbundle_config(project_root, pyz_out))
+    inner = bundle_out / f"{bundle_out.name}.pyz"
+    with zipfile.ZipFile(inner) as zf_bundle, zipfile.ZipFile(pyz_out) as zf_plain:
+        for name in zf_plain.namelist():
+            if name == "env.json":
+                continue
+            assert zf_bundle.read(name) == zf_plain.read(name), name
+        # env.json: built_at can differ; every other field must match.
+        env_a = json.loads(zf_bundle.read("env.json").decode("utf-8"))
+        env_b = json.loads(zf_plain.read("env.json").decode("utf-8"))
+        env_a.pop("built_at", None)
+        env_b.pop("built_at", None)
+        assert env_a == env_b
+
+
+# ---------- _python/ tree is copied verbatim ----------
+
+
+def test_bundle_copies_python_tree_verbatim(
+    project_root: Path, bundle_path: Path, fake_resolver: dict
+) -> None:
+    build(_make_bundle_config(project_root, bundle_path))
+    python_dir = bundle_path / "_python"
+    for rel, content in fake_resolver["python_files"].items():
+        # Use forward slashes in the test inputs but resolve via Path so
+        # Windows uses backslashes natively.
+        dest = python_dir.joinpath(*rel.split("/"))
+        assert dest.is_file(), rel
+        assert dest.read_bytes() == content, rel
+
+
+def test_bundle_python_install_invoked_with_host_version(
+    project_root: Path, bundle_path: Path, fake_resolver: dict
+) -> None:
+    """When --python-version is unset, version is host major.minor (D21c)."""
     import sys
 
-    config = _make_config(project_root, output_path, bundle_python=True)
-    build(config)
+    build(_make_bundle_config(project_root, bundle_path))
     assert len(fake_resolver["python_install_calls"]) == 1
     _install_dir, version = fake_resolver["python_install_calls"][0]
     assert version == f"{sys.version_info.major}.{sys.version_info.minor}"
@@ -203,252 +310,101 @@ def test_no_bundle_means_no_python_install_invocation(
     project_root: Path, tmp_path: Path, fake_resolver: dict
 ) -> None:
     """Step 8.5 is gated on bundle_python — never runs otherwise."""
-    out = tmp_path / "out" / "app.pyz"
+    out = tmp_path / "out" / "plain.pyz"
     out.parent.mkdir(parents=True, exist_ok=True)
-    config = BuildConfig(
-        project_root=project_root,
-        output_path=out,
-        entry_point="myapp.cli:main",
-        console_script=None,
-        python_shebang="/usr/bin/env python3",
-        package=None,
-        force=False,
-        verbosity=0,
-        windows_exe=False,
-        python_version=None,
-        bundle_python=False,
-    )
-    build(config)
+    build(_make_nonbundle_config(project_root, out))
     assert fake_resolver["python_install_calls"] == []
-    with zipfile.ZipFile(out, "r") as zf:
-        for name in zf.namelist():
-            assert not name.startswith("_python/"), name
 
 
-# ---------- invariant: build_id MUST NOT depend on bundled Python (D21d) ----------
+# ---------- invariant: build_id MUST NOT depend on bundled Python (D21e) ----------
 
 
 def test_bundle_does_not_change_build_id(
     project_root: Path, tmp_path: Path, fake_resolver: dict
 ) -> None:
-    out_nobundle = tmp_path / "out" / "app_nobundle.exe"
-    out_bundle = tmp_path / "out" / "app_bundle.exe"
-    out_nobundle.parent.mkdir(parents=True, exist_ok=True)
-
-    cfg_nobundle = _make_config(project_root, out_nobundle, bundle_python=False)
-    build(cfg_nobundle)
-    build_id_nobundle = _read_env_json(out_nobundle)["build_id"]
-
-    cfg_bundle = _make_config(project_root, out_bundle, bundle_python=True)
-    build(cfg_bundle)
-    build_id_bundle = _read_env_json(out_bundle)["build_id"]
-
-    assert build_id_bundle == build_id_nobundle, (
-        "build_id must not change when --bundle-python is added; "
-        "spec 02 §3 step 8.5 places python install AFTER compute_build_id"
-    )
+    """build_id is hashed over staged site-packages only — adding a bundled
+    Python install (step 8.5, after compute_build_id) MUST NOT change it."""
+    bundle_out = tmp_path / "out" / "app"
+    pyz_out = tmp_path / "out" / "plain.pyz"
+    bundle_out.parent.mkdir(parents=True)
+    build(_make_bundle_config(project_root, bundle_out))
+    build(_make_nonbundle_config(project_root, pyz_out))
+    inner = bundle_out / f"{bundle_out.name}.pyz"
+    assert _read_env_json(inner)["build_id"] == _read_env_json(pyz_out)["build_id"]
 
 
-# ---------- invariant I11b: only _python/* and env.json change ----------
+# ---------- env.json carries NO bundled_python field (D21h) ----------
 
 
-def test_invariant_i11b_only_python_prefix_and_envjson_differ(
-    project_root: Path, tmp_path: Path, fake_resolver: dict
+def test_bundle_does_not_emit_bundled_python_field_in_env_json(
+    project_root: Path, bundle_path: Path, fake_resolver: dict
 ) -> None:
-    out_nobundle = tmp_path / "out" / "app_nobundle.exe"
-    out_bundle = tmp_path / "out" / "app_bundle.exe"
-    out_nobundle.parent.mkdir(parents=True, exist_ok=True)
-    build(_make_config(project_root, out_nobundle, bundle_python=False))
-    build(_make_config(project_root, out_bundle, bundle_python=True))
-
-    with zipfile.ZipFile(out_nobundle, "r") as zfa, zipfile.ZipFile(out_bundle, "r") as zfb:
-        names_a = set(zfa.namelist())
-        names_b = set(zfb.namelist())
-        added = names_b - names_a
-        # Every added entry begins with _python/.
-        assert added
-        assert all(n.startswith("_python/") for n in added), added
-        # And the bundle build adds no other entries.
-        assert names_b == names_a | added
-        # For every common arcname except env.json, content must match.
-        for name in names_a:
-            if name == "env.json":
-                continue
-            assert zfa.read(name) == zfb.read(name), name
-
-
-# ---------- env.json carries bundled_python (spec 05 §3.9) ----------
-
-
-def test_bundle_writes_env_bundled_python_field(
-    project_root: Path, output_path: Path, fake_resolver: dict
-) -> None:
-    config = _make_config(project_root, output_path, bundle_python=True)
-    build(config)
-    env = _read_env_json(output_path)
-    assert "bundled_python" in env
-    bp = env["bundled_python"]
-    assert bp["prefix"] == "_python/"
-    assert bp["relative_python_exe"] == "python.exe"
-    fp = bp["fingerprint"]
-    assert isinstance(fp, str)
-    assert len(fp) == 64
-    assert all(c in "0123456789abcdef" for c in fp), fp
-
-
-def test_no_bundle_omits_env_bundled_python_field(
-    project_root: Path, tmp_path: Path, fake_resolver: dict
-) -> None:
-    out = tmp_path / "out" / "plain.pyz"
-    out.parent.mkdir(parents=True, exist_ok=True)
-    config = BuildConfig(
-        project_root=project_root,
-        output_path=out,
-        entry_point="myapp.cli:main",
-        console_script=None,
-        python_shebang="/usr/bin/env python3",
-        package=None,
-        force=False,
-        verbosity=0,
-        windows_exe=False,
-        python_version=None,
-        bundle_python=False,
-    )
-    build(config)
-    env = _read_env_json(out)
+    """The D21 redesign retired the env.json `bundled_python` sub-object —
+    the bundled state is observable from the folder layout, not env.json."""
+    build(_make_bundle_config(project_root, bundle_path))
+    inner = bundle_path / f"{bundle_path.name}.pyz"
+    env = _read_env_json(inner)
     assert "bundled_python" not in env
 
 
-# ---------- cross-language fingerprint contract ----------
+# ---------- --force / preflight rules (D21g) ----------
 
 
-def test_bundle_fingerprint_matches_central_directory_recipe(
-    project_root: Path, output_path: Path, fake_resolver: dict
-) -> None:
-    """The producer's fingerprint MUST equal the value an independent walker
-    derives from the .exe's central directory (the Rust launcher's job).
-    """
-    config = _make_config(project_root, output_path, bundle_python=True)
-    build(config)
-    stamped = _read_env_json(output_path)["bundled_python"]["fingerprint"]
-    derived = _launcher_recipe_fingerprint(output_path)
-    assert stamped == derived
-
-
-def test_bundle_fingerprint_is_deterministic_across_builds(
+def test_bundle_refuses_to_overwrite_unrelated_directory_even_with_force(
     project_root: Path, tmp_path: Path, fake_resolver: dict
 ) -> None:
-    """Same python-files input → same fingerprint, two builds in a row."""
-    out_a = tmp_path / "out" / "a.exe"
-    out_b = tmp_path / "out" / "b.exe"
-    out_a.parent.mkdir(parents=True, exist_ok=True)
-    build(_make_config(project_root, out_a, bundle_python=True))
-    build(_make_config(project_root, out_b, bundle_python=True))
-    fp_a = _read_env_json(out_a)["bundled_python"]["fingerprint"]
-    fp_b = _read_env_json(out_b)["bundled_python"]["fingerprint"]
-    assert fp_a == fp_b
+    """An existing directory at -o that doesn't look like a moonlit bundle
+    is refused even with --force, so --force never turns into an `rm -rf`."""
+    from moonlit.errors import OutputNotWritableError
+
+    out = tmp_path / "out" / "app"
+    out.parent.mkdir(parents=True)
+    out.mkdir()
+    (out / "important_user_file.txt").write_text("don't touch me", encoding="utf-8")
+
+    cfg = _make_bundle_config(project_root, out)
+    # Even with force=True, the unrelated dir must not be overwritten.
+    cfg_force = BuildConfig(**{**cfg.__dict__, "force": True})
+    with pytest.raises(OutputNotWritableError, match="not a moonlit bundle"):
+        build(cfg_force)
+    assert (out / "important_user_file.txt").is_file()
 
 
-def test_bundle_fingerprint_changes_when_python_changes(
+def test_bundle_refuses_existing_regular_file_at_output_path(
     project_root: Path, tmp_path: Path, fake_resolver: dict
 ) -> None:
-    """Different python-files input → different fingerprint."""
-    out_a = tmp_path / "out" / "a.exe"
-    out_b = tmp_path / "out" / "b.exe"
-    out_a.parent.mkdir(parents=True, exist_ok=True)
-    build(_make_config(project_root, out_a, bundle_python=True))
-    # Flip a byte in one python file.
-    fake_resolver["python_files"]["Lib/site.py"] = b"# changed site.py\n"
-    build(_make_config(project_root, out_b, bundle_python=True))
-    fp_a = _read_env_json(out_a)["bundled_python"]["fingerprint"]
-    fp_b = _read_env_json(out_b)["bundled_python"]["fingerprint"]
-    assert fp_a != fp_b
+    """A regular file at -o is refused — folder mode requires a directory
+    target (or a free path)."""
+    from moonlit.errors import OutputNotWritableError
+
+    out = tmp_path / "out" / "app"
+    out.parent.mkdir(parents=True)
+    out.write_text("i'm a file, not a folder", encoding="utf-8")
+    cfg = BuildConfig(**{**_make_bundle_config(project_root, out).__dict__, "force": True})
+    with pytest.raises(OutputNotWritableError, match="not a directory"):
+        build(cfg)
 
 
-def test_bundle_fingerprint_independent_of_build_id(
-    project_root: Path, tmp_path: Path, fake_resolver: dict
+def test_bundle_overwrites_moonlit_bundle_dir_with_force(
+    project_root: Path, bundle_path: Path, fake_resolver: dict
 ) -> None:
-    """Changing site-packages content changes build_id but not the python
-    fingerprint (and vice versa). The two hashes are orthogonal."""
-    out_a = tmp_path / "out" / "a.exe"
-    out_b = tmp_path / "out" / "b.exe"
-    out_a.parent.mkdir(parents=True, exist_ok=True)
-    build(_make_config(project_root, out_a, bundle_python=True))
-    # Mutate site-packages (changes build_id) but keep python files unchanged.
-    fake_resolver["stage_files"]["mypkg/cli.py"] = b"def main():\n    return 42\n"
-    build(_make_config(project_root, out_b, bundle_python=True))
-    env_a = _read_env_json(out_a)
-    env_b = _read_env_json(out_b)
-    assert env_a["build_id"] != env_b["build_id"]
-    assert env_a["bundled_python"]["fingerprint"] == env_b["bundled_python"]["fingerprint"]
+    """A previous moonlit bundle dir IS overwritten under --force."""
+    build(_make_bundle_config(project_root, bundle_path))
+    assert (bundle_path / f"{bundle_path.name}.exe").is_file()
+
+    # Second build with --force should atomically replace the bundle.
+    cfg = BuildConfig(**{**_make_bundle_config(project_root, bundle_path).__dict__, "force": True})
+    build(cfg)
+    assert (bundle_path / f"{bundle_path.name}.exe").is_file()
+    assert (bundle_path / "_python" / "python.exe").is_file()
 
 
-# ---------- hashing.compute_python_fingerprint unit ----------
-
-
-def test_compute_python_fingerprint_matches_zlib_crc32_recipe(tmp_path: Path) -> None:
-    """The hashing module's recipe matches the literal spec 02 §4a algorithm."""
-    import hashlib
-
-    from moonlit import hashing
-
-    root = tmp_path / "py"
-    root.mkdir()
-    (root / "a.txt").write_bytes(b"hello\n")
-    (root / "sub").mkdir()
-    (root / "sub" / "b.bin").write_bytes(b"\x00\x01\x02\x03")
-
-    h = hashlib.sha256()
-    pairs = sorted(
-        [
-            (b"_python/a.txt", zlib.crc32(b"hello\n") & 0xFFFFFFFF),
-            (b"_python/sub/b.bin", zlib.crc32(b"\x00\x01\x02\x03") & 0xFFFFFFFF),
-        ],
-        key=lambda t: t[0],
-    )
-    for arcname, crc in pairs:
-        h.update(arcname)
-        h.update(b"\0")
-        h.update(crc.to_bytes(4, "little"))
-        h.update(b"\0")
-    expected = h.hexdigest()
-    assert hashing.compute_python_fingerprint(root) == expected
-
-
-def test_compute_python_fingerprint_empty_tree(tmp_path: Path) -> None:
-    """Edge case: an empty tree yields the SHA-256 of the empty stream."""
-    import hashlib
-
-    from moonlit import hashing
-
-    root = tmp_path / "empty"
-    root.mkdir()
-    expected = hashlib.sha256().hexdigest()
-    assert hashing.compute_python_fingerprint(root) == expected
-
-
-# ---------- defensive: bundle_python+windows_exe=False raises InternalError ----------
-
-
-def test_bundle_without_windows_exe_internal_error(
-    project_root: Path, output_path: Path, fake_resolver: dict
+def test_bundle_refuses_existing_moonlit_bundle_dir_without_force(
+    project_root: Path, bundle_path: Path, fake_resolver: dict
 ) -> None:
-    """A direct BuildConfig caller that bypasses the CLI still gets stopped."""
-    from moonlit.errors import InternalError
+    """A moonlit-recognised bundle dir without --force triggers OutputExistsError."""
+    from moonlit.errors import OutputExistsError
 
-    out = output_path.with_suffix(".pyz")
-    config = BuildConfig(
-        project_root=project_root,
-        output_path=out,
-        entry_point="myapp.cli:main",
-        console_script=None,
-        python_shebang="/usr/bin/env python3",
-        package=None,
-        force=False,
-        verbosity=0,
-        windows_exe=False,
-        python_version=None,
-        bundle_python=True,
-    )
-    with pytest.raises(InternalError, match="windows_exe"):
-        build(config)
+    build(_make_bundle_config(project_root, bundle_path))
+    with pytest.raises(OutputExistsError, match="--force"):
+        build(_make_bundle_config(project_root, bundle_path))

@@ -99,7 +99,7 @@ If extraction fails between rename and replace, the original `<cache_key>.old.<p
 
 ## Environment variables
 
-The bootstrap reads exactly five:
+The bootstrap reads exactly four:
 
 | Variable | Effect |
 |---|---|
@@ -107,11 +107,10 @@ The bootstrap reads exactly five:
 | `MOONLIT_FORCE_EXTRACT` | Force re-extraction even on a cache hit. **Does not** bypass the lock; only the existence-skip is suppressed. |
 | `MOONLIT_ENTRY_POINT` | Override `env.json.entry_point`. Useful for testing. Same `module:attr` syntax. |
 | `MOONLIT_DEBUG` | On a bootstrap-internal error, print the Python traceback after the `moonlit:` line. Does not affect user-code traceback printing (Python's default excepthook handles those unconditionally). |
-| `MOONLIT_BUNDLED_PYTHON` | Set by the Windows launcher (not the user) when it re-invokes the archive under a bundled interpreter — value is the `env.json.bundled_python.fingerprint`. The bootstrap matches it against the manifest to skip the [Python version check](#python-version-check) for that one nested invocation. A non-matching value falls through to the strict check. |
 
 "Truthy" means *present and non-empty after `os.environ.get(name, "")`*. The empty string is treated as unset; `MOONLIT_FORCE_EXTRACT=0` is **non-empty hence truthy** (surprising but consistent — the policy never special-cases "0", "false", or "no").
 
-Names beginning with `MOONLIT_` other than the five above are reserved for future versions and ignored today.
+Names beginning with `MOONLIT_` other than the four above are reserved for future versions and ignored today. `MOONLIT_BUNDLED_PYTHON` was used by moonlit 0.3.0's runtime-extraction launcher; the v0.4.0 folder-bundle redesign retired it.
 
 ## Runtime exit codes
 
@@ -179,19 +178,6 @@ For reference; the `env.json` produced by `moonlit build` looks like:
 }
 ```
 
-When the archive was built with `--bundle-python`, an additional `bundled_python` object is present:
+`env.json` is byte-identical between bundle and non-bundle builds (modulo the `built_at` timestamp). When the archive was built with `--bundle-python`, the bundled-Python state is observable from the **folder layout** sitting next to the inner `.pyz` (sibling `<basename>.exe` launcher and `_python\python.exe` interpreter) — `env.json` does not duplicate that signal. The v0.3.0 `bundled_python` sub-object inside `env.json` was retired in v0.4.0; a `bundled_python` field appearing in an older archive is silently ignored under the standard "unknown fields" forward-compatibility rule.
 
-```json
-{
-  "...": "(fields above)",
-  "bundled_python": {
-    "prefix": "_python/",
-    "relative_python_exe": "python.exe",
-    "fingerprint": "<64 hex chars>"
-  }
-}
-```
-
-The sub-fields name where in the zip body the interpreter lives (`prefix`, must end in `/`), where `python.exe` sits relative to that prefix (`relative_python_exe`, a non-empty relative POSIX path), and a 64-char lowercase-hex fingerprint over the dist tree. The fingerprint is the value the launcher sets as `MOONLIT_BUNDLED_PYTHON` when re-invoking under the bundled interpreter.
-
-Validation is ordered (the first failure decides the error message): existence in archive, UTF-8 decode, JSON parse, top-level dict, `schema_version` is an integer (not bool) equal to `1`, all required fields present, types correct, format checks (PEP 508 name regex, lowercase 64-hex `build_id`, `module:attr` entry point, `%Y-%m-%dT%H:%M:%SZ` `built_at`, non-empty `moonlit_version`, non-empty `python_shebang` with no embedded newline and no leading `#!`). The optional `python_version` field, when present, must match `^\d+\.\d+$` (`major.minor` only); when absent the runtime version check is skipped — see [Python version check](#python-version-check). The optional `bundled_python` object, when present, must be a dict containing exactly the three string sub-fields above, each matching its format rule; the schema version is **not** bumped (it's an additive v1 field).
+Validation is ordered (the first failure decides the error message): existence in archive, UTF-8 decode, JSON parse, top-level dict, `schema_version` is an integer (not bool) equal to `1`, all required fields present, types correct, format checks (PEP 508 name regex, lowercase 64-hex `build_id`, `module:attr` entry point, `%Y-%m-%dT%H:%M:%SZ` `built_at`, non-empty `moonlit_version`, non-empty `python_shebang` with no embedded newline and no leading `#!`). The optional `python_version` field, when present, must match `^\d+\.\d+$` (`major.minor` only); when absent the runtime version check is skipped — see [Python version check](#python-version-check).

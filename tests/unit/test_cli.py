@@ -976,11 +976,31 @@ def test_info_json_validates_before_emitting(call_cli: Any, tmp_path: Path) -> N
 # ---------- --windows-exe flag (D19) ----------
 
 
-def test_bundle_python_requires_windows_exe_invariant_i13(
+def test_bundle_python_rejects_exe_suffix_invariant_i13(
     call_cli: Any, project_root: Path, tmp_path: Path
 ) -> None:
-    # spec invariant I13 / D21: --bundle-python without --windows-exe is exit 2.
-    # Two forms covered: a .pyz output and a .exe output (still no --windows-exe).
+    # spec invariant I13 / D21b (post-redesign): --bundle-python produces a
+    # folder, so -o MUST NOT end in .exe — the old single-file usage shape
+    # gets a clear error rather than a confusing directory named "app.exe".
+    out_exe = tmp_path / "out" / "app.exe"
+    out_exe.parent.mkdir()
+    code, _, stderr = call_cli(
+        "build",
+        str(project_root),
+        "--bundle-python",
+        "-e",
+        "myapp:main",
+        "-o",
+        str(out_exe),
+    )
+    assert code == 2
+    assert "directory" in stderr.lower() or ".exe" in stderr
+
+
+def test_bundle_python_rejects_pyz_suffix_invariant_i13(
+    call_cli: Any, project_root: Path, tmp_path: Path
+) -> None:
+    # Same invariant, .pyz form.
     out_pyz = tmp_path / "out" / "app.pyz"
     out_pyz.parent.mkdir()
     code, _, stderr = call_cli(
@@ -993,29 +1013,57 @@ def test_bundle_python_requires_windows_exe_invariant_i13(
         str(out_pyz),
     )
     assert code == 2
-    assert "--windows-exe" in stderr
-
-    out_exe = tmp_path / "out" / "app.exe"
-    code, _, stderr = call_cli(
-        "build",
-        str(project_root),
-        "--bundle-python",
-        "-e",
-        "myapp:main",
-        "-o",
-        str(out_exe),
-    )
-    assert code == 2
-    assert "--windows-exe" in stderr
+    assert "directory" in stderr.lower() or ".pyz" in stderr
 
 
-def test_bundle_python_threads_into_build_config(
+def test_bundle_python_threads_into_build_config_without_windows_exe(
     monkeypatch: pytest.MonkeyPatch,
     project_root: Path,
     tmp_path: Path,
 ) -> None:
-    # --bundle-python combined with --windows-exe sets BuildConfig.bundle_python.
-    out = tmp_path / "out" / "app.exe"
+    # D21b: --bundle-python no longer requires --windows-exe; the flag alone
+    # is sufficient and the -o argument is a bare directory path.
+    out = tmp_path / "out" / "app"
+    out.parent.mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "moonlit",
+            "build",
+            str(project_root),
+            "--bundle-python",
+            "-e",
+            "myapp:main",
+            "-o",
+            str(out),
+        ],
+    )
+    captured: dict[str, Any] = {}
+
+    def capture(config: Any) -> int:
+        captured["bundle_python"] = config.bundle_python
+        captured["windows_exe"] = config.windows_exe
+        return 0  # short-circuit the pipeline; we're only testing the flag.
+
+    monkeypatch.setattr(cli_module, "run_build", capture)
+    try:
+        cli_module.main()
+    except SystemExit as exc:
+        assert exc.code in (0, None)
+    assert captured["bundle_python"] is True
+    assert captured["windows_exe"] is False
+
+
+def test_bundle_python_with_windows_exe_is_accepted_as_no_op(
+    monkeypatch: pytest.MonkeyPatch,
+    project_root: Path,
+    tmp_path: Path,
+) -> None:
+    # D21b: --windows-exe is accepted alongside --bundle-python (no error)
+    # but doesn't change the output shape — the folder bundle always
+    # contains a launcher .exe by construction.
+    out = tmp_path / "out" / "app"
     out.parent.mkdir()
     monkeypatch.setattr(
         sys,
@@ -1037,15 +1085,15 @@ def test_bundle_python_threads_into_build_config(
     def capture(config: Any) -> int:
         captured["bundle_python"] = config.bundle_python
         captured["windows_exe"] = config.windows_exe
-        return 0  # short-circuit the pipeline; we're only testing the flag.
+        return 0
 
     monkeypatch.setattr(cli_module, "run_build", capture)
     try:
         cli_module.main()
     except SystemExit as exc:
         assert exc.code in (0, None)
-    assert captured["windows_exe"] is True
     assert captured["bundle_python"] is True
+    assert captured["windows_exe"] is True
 
 
 def test_windows_exe_without_bundle_python_leaves_flag_false(
