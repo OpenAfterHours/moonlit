@@ -15,7 +15,8 @@ from typing import Any
 
 import pytest
 
-from moonlit._bootstrap import _resolve_cache_root, bootstrap
+from moonlit._bootstrap import bootstrap
+from moonlit._bootstrap.environment import resolve_cache_root as _resolve_cache_root
 
 # ---------- helpers / fixtures ----------
 

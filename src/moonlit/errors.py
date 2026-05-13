@@ -81,3 +81,17 @@ class PythonBundleError(MoonlitError):
     """
 
     exit_code = 13
+
+
+class CleanRefusedError(MoonlitError):
+    """``moonlit clean`` skipped one or more entries because their lock was
+    held and ``--force`` was not set (D23 / specs/01-cli.md §2.4)."""
+
+    exit_code = 14
+
+
+class CleanIOError(MoonlitError):
+    """``moonlit clean`` hit an I/O failure during deletion (rmtree raised,
+    malformed ``--older-than`` value, etc.; D23)."""
+
+    exit_code = 15

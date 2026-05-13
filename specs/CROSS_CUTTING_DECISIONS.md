@@ -48,6 +48,9 @@ Drop `--reinstall-package`. Drop the brittle "re-export and grep `-e file://`" a
 | 10 | uv build wheel failure or wheel artifact issue | WheelArtifactError |
 | 11 | Internal invariant violation | InternalError |
 | 12 | Input archive is not a moonlit zipapp (used by `info`) | BadArchiveError |
+| 13 | Bundled-Python fetch or install failure (D21) | PythonBundleError |
+| 14 | `moonlit clean` refused (held lock without `--force`) | CleanRefusedError |
+| 15 | `moonlit clean` I/O failure during deletion | CleanIOError |
 | 130 | SIGINT | — |
 
 **Runtime (bootstrap) enumeration is INDEPENDENT** — different process, different namespace:
@@ -344,6 +347,18 @@ If either probe target is missing, the launcher falls through to the PE-end + sh
 **D22c — Crate dependencies.** Only `windows-sys` is required; `miniz_oxide` and `sha2` (added in v0.3.0 for the runtime-extraction path) are removed. Launcher binary size drops accordingly — from ~200 KiB to ~30–50 KiB per arch under the MSVC toolchain.
 
 **D22d — Phase-1 scope.** Windows host produces Windows bundles. Cross-OS targets are deferred under D20e's umbrella. A bundled folder's on-disk size is dominated by `_python/` (~30 MiB uncompressed for python-build-standalone).
+
+## D23 — `moonlit clean` cooperative liveness
+
+`moonlit clean` (specs/01-cli.md §2.4, policy in specs/04-cache-layout.md §12.1) reaps cache entries under a **cooperative** liveness model:
+
+1. **Try-lock**: for each cache entry slated for deletion, the command try-acquires `<cache_root>/<cache_key>.lock` non-blocking via the same primitives the bootstrap uses (`fcntl.flock(LOCK_EX | LOCK_NB)` on POSIX, `msvcrt.locking(LK_NBLCK, 1)` on Windows). On success, deletion proceeds while the lock is held, ensuring no concurrent extractor can populate the directory mid-rmtree. On failure, the entry is marked `skip` with reason `(locked)`.
+2. **`--force` escape**: skips the try-lock and deletes unconditionally. Useful when the user knows the holder is dead (debugger killed, kernel lock auto-released but the file remains).
+3. **Fast-path reader caveat**: the D14 cache-hit fast path reads `<cache_key>/site-packages/` *without* holding the lock. `moonlit clean` cannot detect such readers. Running `clean` while a moonlit `.pyz` is actively importing is undefined behavior; the contract is the user's assertion that no such reader exists.
+4. **No pid liveness on orphan dirs**: `.tmp.<pid>/` and `.old.<pid>/` siblings are reaped by name without consulting the owning pid (racy across pid reuse per spec 04 §11). Their owning `<cache_key>` being in the deletion set, or missing entirely, is the reap signal.
+5. **Exit-code distinction**: at least one held-lock skip with `--force` unset → exit 14 (`CleanRefusedError`). I/O failure during deletion → exit 15 (`CleanIOError`). Both differ from a clean success (exit 0) so CI can tell what happened.
+
+D23 is the *only* decision that loosens read-side synchronization on the cache for an additional consumer; the bootstrap's own contract (D13, D14) is unchanged. No new on-disk artifacts, no new env vars, no daemon.
 
 ---
 

@@ -73,6 +73,26 @@ def lock(lock_path: str | Path) -> Iterator[int]:
         release(fd, lock_path)
 
 
+def try_acquire_nonblocking(lock_path: str | Path) -> int | None:
+    """Single-shot non-blocking acquire; return the fd or ``None`` on contention.
+
+    Used by ``moonlit clean`` (D23) to detect a live extractor without waiting
+    out the 60 s timeout. On contention the fd is closed before returning so
+    no descriptors leak. On unrelated OSErrors from ``_try_lock`` the fd is
+    closed and the error propagates.
+    """
+    fd = os.open(lock_path, os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        held = _try_lock(fd)
+    except BaseException:
+        os.close(fd)
+        raise
+    if held:
+        return fd
+    os.close(fd)
+    return None
+
+
 # ---------- platform dispatch (defined below callers per stepdown rule) ----------
 
 if os.name == "nt":

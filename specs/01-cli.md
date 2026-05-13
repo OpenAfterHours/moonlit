@@ -22,7 +22,7 @@ moonlit [--version | -V] [--help | -h] <subcommand> [args...]
 - No subcommand and no flag → top-level help to stderr, exit 2.
 - Unknown subcommand (with or without `--help`) → `error: no such subcommand: <name>` on stderr, exit 2. (Deliberate: `--help` does not redeem an unknown subcommand; that would mask typos.)
 
-v0.1 defined exactly one subcommand: `build`. v0.2 adds `info`.
+v0.1 defined exactly one subcommand: `build`. v0.2 adds `info`. v0.3 adds `clean`.
 
 ### 2.2 `moonlit build`
 
@@ -92,6 +92,67 @@ The header-line format mirrors the `build` success line (Section 8). Fields are 
 
 **Stability**: the existence of the `info` subcommand is stable from 0.2 onward. The default-mode header and field-listing format MAY change in 0.x; `--json` output (the raw `env.json` bytes) is byte-stable and pinned to spec 05.
 
+### 2.4 `moonlit clean`
+
+```
+moonlit clean [flags]
+```
+
+Reap stale cache entries under the runtime cache root (specs/04-cache-layout.md §2, same resolution algorithm as the bootstrap; `MOONLIT_ROOT` honored). The cooperative liveness model and orphan-reap rules are pinned in `specs/04-cache-layout.md §12.1` and D23.
+
+| Short | Long | Type | Default | Required | Description |
+|-------|------|------|---------|----------|-------------|
+|       | `--all` | flag | false | one-of {`--all`, `--older-than`, `--keep-latest`, `--name`} | Match every well-formed `<cache_key>` cache entry. |
+|       | `--older-than` | duration | none | conditional | Match entries whose `<cache_key>/site-packages/` `st_mtime` is older than now − duration. Accepts `<int><unit>` with `unit ∈ {s, m, h, d}` (e.g. `30m`, `7d`). Must be > 0. |
+|       | `--keep-latest` | int | none | conditional | Group entries by normalized name; within each group, keep the N entries with the newest `site-packages` mtime and mark the rest deletable. `--keep-latest 0` deletes every entry in matching groups. |
+|       | `--name` | string | none | conditional | fnmatch glob over the normalized name (PEP-503 form, lowercased). Combine with `--keep-latest` or `--older-than` to narrow further. |
+|       | `--force` | flag | false | no | Skip the try-lock liveness check; delete entries even if the lock is currently held (cooperative-only; cannot interrupt a peer). See D23. |
+|       | `--dry-run` | flag | false | no | Print the action plan; do not modify the filesystem. |
+|       | `--show-sizes` | flag | false | no | Compute per-entry sizes for `keep`/`skip` rows (off by default for speed). `delete` rows always show the freed size. |
+| `-q` | `--quiet` | flag | false | no | Suppress the table; print only the trailer on stdout. |
+| `-v` | `--verbose` | flag | false | no | Show full 64-char `build_id` hex in the table and log skipped unknown directory names. |
+|       | `--help` / `-h` | flag | — | no | Print clean help to stdout, exit 0. |
+
+**Required-filter rule**: bare `moonlit clean` (no `--all`, no `--older-than`, no `--keep-latest`, no `--name`) → exit 2 with the literal text `error: moonlit clean requires at least one of --all, --older-than, --keep-latest, --name`. This prevents "what does the default even do?" footguns.
+
+**Filter composition**: when more than one of `--all`, `--older-than`, `--keep-latest`, `--name` is set, the selected entries are the intersection. `--all` ∩ `--older-than 7d` is equivalent to `--older-than 7d`. `--keep-latest` groups *after* the other filters narrow the candidate set.
+
+**Output format (stderr, table; stdout, trailer)**:
+
+```
+ACTION  NAME         BUILD_ID  AGE   SIZE       PATH
+delete  myapp        5e6f7890  9d    12.5 MiB   <cache_root>/myapp_5e6f...
+keep    myapp        a1b2c3d4  2h    —          <cache_root>/myapp_a1b2...
+skip    sometool     deadbeef  3d    —          <cache_root>/sometool_deadbeef... (locked)
+orphan  myapp.tmp.4  —         3d    1.2 MiB    <cache_root>/.myapp_....tmp.4
+```
+
+- `ACTION` ∈ {`keep`, `delete`, `skip`, `orphan`}. `orphan` covers `.tmp.<pid>`, `.old.<pid>`, and dangling `<cache_key>.lock` siblings whose owning `<cache_key>` is gone or also being deleted.
+- `BUILD_ID` is the first 8 hex chars by default; `--verbose` shows all 64.
+- `AGE` is humanized from `site-packages/` mtime for cache entries, or the orphan's own mtime for orphan rows.
+- `SIZE` shows `—` for `keep`/`skip` rows unless `--show-sizes` is set; always shown for `delete` and `orphan` rows.
+- Skip-reason (e.g. `(locked)`) appears in parentheses after the path for `skip` rows.
+- Under `--dry-run` the table is unchanged but the trailer reads `would delete N entries, would free <bytes_humanized>` on stdout.
+- Real-run trailer: `deleted N entries, freed <bytes_humanized>` on stdout.
+- `--quiet` suppresses the table; the trailer line is preserved on stdout.
+
+**Validation order** (first failure short-circuits):
+
+1. Parser-level errors (mutually-exclusive `-q`/`-v`, unknown flag, `--older-than` syntactically malformed, `--keep-latest` < 0, missing-filter rule) → exit 2.
+2. Cache root resolves (`MOONLIT_ROOT` override or platform default) — creation is NOT attempted. If the resolved path does not exist, the command treats it as an empty cache and prints `deleted 0 entries, freed 0 B` (or the `--dry-run` equivalent) on stdout, exit 0.
+3. Scan + classify entries; unknown directory names are silently skipped (logged under `-v` as `unknown entry: <name>`). Reserved subdirs like `v2/` are unknown entries and survive.
+4. For each candidate, try-acquire `<cache_key>.lock` (D23). If held and `--force` is unset, mark `skip`; else proceed to delete.
+5. Execute deletions, accumulate freed-byte count, print the trailer, return the exit code below.
+
+**Exit codes** (extends Section 6 with codes 14 and 15):
+
+- `0` — all targeted entries deleted; or zero candidates matched the filter set.
+- `2` — usage error (parser-level, including the no-filters rule and bad `--older-than` syntax).
+- `14` — `CleanRefusedError`: at least one candidate was skipped because its lock was held and `--force` was not set. All non-held entries that matched are still deleted; the exit code signals partial completion.
+- `15` — `CleanIOError`: I/O failure during deletion (e.g. `shutil.rmtree` raised). Partial progress is possible; the trailer reports what was actually freed before the failure.
+
+**Stability**: the existence of the `clean` subcommand is stable from 0.3 onward. Flag spellings (`--all`, `--older-than`, `--keep-latest`, `--name`, `--force`, `--dry-run`, `--show-sizes`) are stable. The trailer format (`deleted N entries, freed …`) is stable. The table column layout MAY change in 0.x; consumers wanting machine-readable output should rely on the trailer's grammar, not the table.
+
 ## 3. Flag interaction rules
 
 1. Exactly one of `-e`, `-c` is required. Neither or both → exit 2.
@@ -159,6 +220,8 @@ This table mirrors D3 exactly. Runtime exit codes are independent (see `specs/03
 | 11 | Internal invariant violation | `InternalError` |
 | 12 | Input archive is not a moonlit zipapp (used by `info`) | `BadArchiveError` |
 | 13 | Bundled-Python fetch or install failure (D21) | `PythonBundleError` |
+| 14 | `moonlit clean` refused to delete one or more entries because their lock was held and `--force` was not set | `CleanRefusedError` |
+| 15 | `moonlit clean` hit an I/O failure during deletion (rmtree raised, etc.) | `CleanIOError` |
 | 130 | SIGINT | — |
 
 `--version` failures (e.g. unreadable package metadata) are exit 1 (unhandled), not exit 0.

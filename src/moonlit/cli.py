@@ -25,6 +25,7 @@ from pathlib import Path
 import click
 
 from . import __version__
+from . import clean as clean_module
 from ._bootstrap import environment as bootstrap_env
 from ._bootstrap.errors import EnvJsonError as _BootstrapEnvJsonError
 from .builder import BuildConfig, humanize_bytes
@@ -280,6 +281,96 @@ def info_cmd(pyz: str, json_mode: bool) -> None:
         return
 
     _print_info(pyz_path, env)
+
+
+@cli.command(
+    name="clean",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+@click.option("--all", "all_", is_flag=True, default=False, help="Match every cache entry.")
+@click.option(
+    "--older-than",
+    "older_than",
+    default=None,
+    help="Match entries older than the given duration (e.g. 30m, 7d).",
+)
+@click.option(
+    "--keep-latest",
+    "keep_latest",
+    type=int,
+    default=None,
+    help="Keep the N newest entries per normalized name; delete the rest.",
+)
+@click.option(
+    "--name",
+    "name_pattern",
+    default=None,
+    help="fnmatch glob over the normalized name (PEP-503 form).",
+)
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    default=False,
+    help="Skip the try-lock liveness check (D23).",
+)
+@click.option(
+    "--dry-run",
+    "dry_run",
+    is_flag=True,
+    default=False,
+    help="Print the action plan; do not modify the cache.",
+)
+@click.option(
+    "--show-sizes",
+    "show_sizes",
+    is_flag=True,
+    default=False,
+    help="Compute per-entry sizes for keep/skip rows.",
+)
+@click.option("-q", "--quiet", "quiet", is_flag=True, default=False)
+@click.option("-v", "--verbose", "verbose", is_flag=True, default=False)
+def clean_cmd(
+    all_: bool,
+    older_than: str | None,
+    keep_latest: int | None,
+    name_pattern: str | None,
+    force: bool,
+    dry_run: bool,
+    show_sizes: bool,
+    quiet: bool,
+    verbose: bool,
+) -> None:
+    """Reap stale cache entries (specs/01-cli.md §2.4, specs/04-cache-layout.md §12.1)."""
+    if quiet and verbose:
+        raise click.UsageError("--quiet and --verbose are mutually exclusive")
+    if not (all_ or older_than is not None or keep_latest is not None or name_pattern is not None):
+        raise click.UsageError(
+            "moonlit clean requires at least one of --all, --older-than, --keep-latest, --name"
+        )
+    if keep_latest is not None and keep_latest < 0:
+        raise click.UsageError("--keep-latest must be >= 0")
+    parsed_older = None
+    if older_than is not None:
+        try:
+            parsed_older = clean_module._parse_duration(older_than)
+        except ValueError as exc:
+            raise click.UsageError(str(exc)) from exc
+
+    cache_root = clean_module._resolve_cache_root()
+    verbosity = 1 if verbose else (-1 if quiet else 0)
+    config = clean_module.CleanConfig(
+        cache_root=cache_root,
+        all_=all_,
+        older_than=parsed_older,
+        keep_latest=keep_latest,
+        name_pattern=name_pattern,
+        force=force,
+        dry_run=dry_run,
+        show_sizes=show_sizes,
+        verbosity=verbosity,
+    )
+    sys.exit(clean_module.clean(config))
 
 
 def main() -> None:

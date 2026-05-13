@@ -67,7 +67,7 @@ Extraction protocol:
 
 ## 6. Lifecycle
 
-Created by bootstrap on first run or when `MOONLIT_FORCE_EXTRACT=1`. Read by bootstrap on cache hit. Modified during normal use only by Python's bytecode compiler (Section 7). Not deleted by anything automatic in MVP; `moonlit clean` is v0.2.
+Created by bootstrap on first run or when `MOONLIT_FORCE_EXTRACT=1`. Read by bootstrap on cache hit. Modified during normal use only by Python's bytecode compiler (Section 7). Never deleted automatically; manual reaping is the user's job. The `moonlit clean` subcommand (specs/01-cli.md §2.4, policy in §12.1 below) is the supported tool — there is no daemon and no implicit GC.
 
 ## 7. Read-mostly contract
 
@@ -125,7 +125,32 @@ Stale `.<cache_key>.old.<pid>/` siblings are opportunistically swept on the next
 
 ## 12. GC, disk usage, path normalization
 
-No GC in MVP; every distinct `<cache_key>` consumes one staged-site-packages worth of disk. `realpath` after env-var expansion; internal comparisons use `os.path.normpath`; on-disk paths use the native separator. Moonlit creates no symlinks.
+No implicit GC; every distinct `<cache_key>` consumes one staged-site-packages worth of disk until the user explicitly reaps it. `realpath` after env-var expansion; internal comparisons use `os.path.normpath`; on-disk paths use the native separator. Moonlit creates no symlinks.
+
+## 12.1 GC policy (`moonlit clean`)
+
+`moonlit clean` (specs/01-cli.md §2.4) is the only supported way to shrink the cache root. Its policy is pinned here so future revisions do not drift.
+
+**Selection.** Candidates are exactly the well-formed `<cache_key>` directories directly under `<cache_root>/` plus their `.tmp.<pid>/`, `.old.<pid>/`, and `<cache_key>.lock` siblings. Unknown directory names (e.g. a future `v2/` reserved subtree per §14, third-party debris) are skipped silently and never deleted. The flag matrix:
+
+| Flag | Effect on the candidate set |
+|------|-----------------------------|
+| `--all` | match every well-formed `<cache_key>` directory |
+| `--older-than <dur>` | match cache entries whose `<cache_key>/site-packages/` `st_mtime` is older than now − duration |
+| `--keep-latest <N>` | group by normalized name; keep the N newest by `site-packages` mtime; mark the rest deletable |
+| `--name <pat>` | fnmatch glob over the normalized name (the part before the trailing `_<64hex>`) |
+
+When more than one filter is set, the deletion set is the intersection. `--keep-latest` is applied last (after the other filters narrow the candidate set).
+
+**Liveness model (D23).** For each cache entry slated for deletion, `moonlit clean` tries to acquire `<cache_root>/<cache_key>.lock` non-blocking, using the same OS primitives the bootstrap uses (`fcntl.flock(LOCK_EX | LOCK_NB)` on POSIX, `msvcrt.locking(LK_NBLCK, 1)` on Windows). If acquisition fails, the entry is skipped with reason `(locked)`. `--force` overrides the check — the entry is deleted regardless of lock state. Cache-hit fast-path readers (§9 / D14) hold no lock and are therefore not detectable; running `moonlit clean` while a moonlit `.pyz` is actively importing is undefined behavior. The deletion happens **while holding the lock**, so a concurrent extractor that wins the lock after us starts from a clean slate.
+
+**Orphan reap.** `moonlit clean` is the natural place to remove leaked staging junk:
+- `.<cache_key>.tmp.<pid>/` and `.<cache_key>.old.<pid>/` siblings are deleted whenever (a) their owning `<cache_key>` is in the deletion set for this run, or (b) the owning `<cache_key>` directory no longer exists. Per-pid liveness checks are NOT performed — they are racy across pid reuse (§11). The user's "no moonlit .pyz is currently extracting" assertion is the contract.
+- `<cache_key>.lock` files whose `<cache_key>/` is missing (or being deleted in this run) are unlinked after a successful try-lock confirms no one currently holds them. Unhealthy lock files (`--force` overrode a live holder) are left in place; the kernel releases them on process death and the next opener will create a fresh open file description.
+
+**Output.** A four-action table (`keep`, `delete`, `skip`, `orphan`) on stderr followed by a single trailer line on stdout (`deleted N entries, freed <bytes_humanized>` or `would delete …, would free …` under `--dry-run`). Full grammar in specs/01-cli.md §2.4.
+
+**Bare invocation.** `moonlit clean` with none of `--all`, `--older-than`, `--keep-latest`, `--name` exits 2 with a usage message. There is no implicit "scan and report" default — that would tempt users into a "do nothing" mental model.
 
 ## 13. Edge cases
 
@@ -134,7 +159,7 @@ No GC in MVP; every distinct `<cache_key>` consumes one staged-site-packages wor
 3. User deletes `site-packages/` mid-execution: behavior undefined (loaded modules survive in memory; new imports fail).
 4. Distinct names sharing a `build_id`: distinct cache entries (full key includes name).
 5. Same `<cache_key>` from a different bootstrap version: cache hit. The bootstrap that runs is whatever was baked into the `.pyz`; bootstrap version is not part of the key.
-6. Stale `.tmp.<pid>` from a SIGKILL'd extractor: leaks until manual cleanup; v0.2 GC.
+6. Stale `.tmp.<pid>` from a SIGKILL'd extractor: leaks until reaped by `moonlit clean` (§12.1) on the next user-initiated run.
 7. Stale lock: only possible from a still-live but stuck holder (debugger pause, deep AV scan). 60 s timeout then bootstrap exit code 3. Crashed holders no longer wedge the cache — the kernel releases their lock at process exit.
 8. Antivirus interference on Windows holding handles during `os.replace`: best-effort retry inside `atomic_replace_dir` (documented limitation).
 9. Disk-full mid-extract: tempdir abandoned, lock released in `finally`; user retries with `MOONLIT_FORCE_EXTRACT=1`.

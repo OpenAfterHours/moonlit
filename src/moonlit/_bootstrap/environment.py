@@ -3,9 +3,14 @@
 Implements the D8 9-step ordered validation (specs/05-env-json-schema.md §4)
 and the per-field format checks (§3). Every failure raises EnvJsonError; the
 bootstrap entry point translates it to runtime exit code 1 (D3).
+
+Also hosts the shared :func:`resolve_cache_root` helper used by the bootstrap
+and by build-time ``moonlit clean`` (D23): both consumers must agree on which
+directory to operate against, so the algorithm lives here once.
 """
 
 import json
+import os
 import re
 import zipfile
 from dataclasses import dataclass
@@ -50,6 +55,41 @@ class Environment:
     # Optional v1 field per spec 05 §7. Absent when an older moonlit produced
     # the archive; the bootstrap skips the version check in that case.
     python_version: str | None = None
+
+
+def resolve_cache_root() -> Path:
+    """Resolve the runtime cache root per specs/03-bootstrap-runtime.md §3.
+
+    1. ``MOONLIT_ROOT`` env var, if present and non-empty.
+    2. Otherwise on Windows: ``%LOCALAPPDATA%\\moonlit`` when the env var is set.
+    3. Otherwise: ``~/.moonlit``.
+
+    The path is expanded and ``resolve()``d (for the override case) so that
+    callers receive an absolute canonicalized path. No I/O beyond stat — the
+    directory is NOT created here; see :func:`ensure_cache_root_exists`.
+
+    Shared by the bootstrap and by build-time ``moonlit clean`` (D23) so the
+    two consumers cannot drift.
+    """
+    # D16: present and non-empty after os.environ.get is truthy.
+    override = os.environ.get("MOONLIT_ROOT", "")
+    if override:
+        return Path(override).expanduser().resolve()
+    if os.name == "nt":
+        local_app_data = os.environ.get("LOCALAPPDATA", "")
+        if local_app_data:
+            return Path(local_app_data) / "moonlit"
+    return Path.home() / ".moonlit"
+
+
+def ensure_cache_root_exists(cache_root: Path) -> None:
+    """``os.makedirs(cache_root, exist_ok=True)`` with an EnvJsonError-free
+    error path.
+
+    Callers that want to translate the OSError into their own exit-code
+    namespace can wrap this; the bootstrap raises BootstrapError directly.
+    """
+    os.makedirs(cache_root, exist_ok=True)
 
 
 def load(archive_path: str | Path) -> Environment:

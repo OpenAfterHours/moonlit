@@ -40,7 +40,7 @@ def _do_bootstrap() -> int:
     archive = _resolve_archive()
     env = environment.load(archive)
     _check_python_version(env)
-    cache_root = _resolve_cache_root()
+    cache_root = environment.resolve_cache_root()
     _ensure_cache_root_exists(cache_root)
     site_dir = extract.materialize(env, cache_root, archive)
     return runner.run(env, site_dir)
@@ -71,21 +71,9 @@ def _check_python_version(env: environment.Environment) -> None:
     )
 
 
-def _resolve_cache_root() -> Path:
-    # D16: present and non-empty after os.environ.get is truthy.
-    override = os.environ.get("MOONLIT_ROOT", "")
-    if override:
-        return Path(override).expanduser().resolve()
-    if os.name == "nt":
-        local_app_data = os.environ.get("LOCALAPPDATA", "")
-        if local_app_data:
-            return Path(local_app_data) / "moonlit"
-    return Path.home() / ".moonlit"
-
-
 def _ensure_cache_root_exists(cache_root: Path) -> None:
     try:
-        os.makedirs(cache_root, exist_ok=True)
+        environment.ensure_cache_root_exists(cache_root)
     except OSError as exc:
         raise BootstrapError(f"cannot create cache root {cache_root}: {exc}") from exc
 

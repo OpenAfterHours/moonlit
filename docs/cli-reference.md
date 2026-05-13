@@ -15,7 +15,7 @@ moonlit [-V | --version] [-h | --help] <subcommand> [args...]
 
 Running `moonlit` with no subcommand and no flag prints the help to stderr and exits 2. Running `moonlit <unknown>` (with or without `--help`) prints `error: no such subcommand: <name>` to stderr and exits 2.
 
-Subcommands: [`build`](#moonlit-build) (produce a `.pyz`/`.exe`) and [`info`](#moonlit-info) (inspect a built archive's `env.json`).
+Subcommands: [`build`](#moonlit-build) (produce a `.pyz`/`.exe`), [`info`](#moonlit-info) (inspect a built archive's `env.json`), and [`clean`](#moonlit-clean) (reap stale cache entries).
 
 ## `moonlit build`
 
@@ -88,6 +88,8 @@ The CLI performs these checks in order; the first failure short-circuits with th
 | 11 | Internal invariant violation (a moonlit bug) | `InternalError` |
 | 12 | Input archive (for `moonlit info`) is not a valid moonlit `.pyz` | `BadArchiveError` |
 | 13 | `--bundle-python`: `uv python install` failed or the install dir's shape was unexpected | `PythonBundleError` |
+| 14 | `moonlit clean`: at least one entry was skipped because its lock was held and `--force` was not set | `CleanRefusedError` |
+| 15 | `moonlit clean`: I/O failure during deletion (`rmtree` raised, etc.) | `CleanIOError` |
 | 130 | SIGINT (Ctrl-C) | — |
 
 Build-time and runtime exit codes are independent enumerations; the runtime codes (0–3) live in [Runtime](runtime.md). The same numeric value can mean different things in the two namespaces.
@@ -186,6 +188,100 @@ Examples:
 ```sh
 moonlit info myapp.pyz
 moonlit info myapp.pyz --json | jq .python_version
+```
+
+## `moonlit clean`
+
+```
+moonlit clean [flags]
+```
+
+Reap stale cache entries from the runtime cache root. The cache root is resolved the same way the bootstrap resolves it: `MOONLIT_ROOT` if set, otherwise `%LOCALAPPDATA%\moonlit\` on Windows or `~/.moonlit/` on POSIX.
+
+Every `.pyz` extracts its bundled `site-packages/` to `<cache_root>/<normalized_name>_<build_id>/site-packages/` on first run. There is no implicit garbage collection — each new build of the same app accumulates another cache entry. `moonlit clean` is the supported tool for reclaiming that disk.
+
+### Flags
+
+| Flag | Type | Required | Description |
+|---|---|---|---|
+| `--all` | flag | one-of `{--all, --older-than, --keep-latest, --name}` | Match every well-formed cache entry. |
+| `--older-than` | `<int><s\|m\|h\|d>` | conditional | Match entries whose `site-packages/` mtime is older than the given duration (e.g. `30m`, `7d`). Must be positive; compound forms like `1h30m` are not supported. |
+| `--keep-latest` | int `>= 0` | conditional | Group entries by normalized name; keep the N newest per group, mark the rest deletable. `--keep-latest 0` deletes every matching entry. |
+| `--name` | fnmatch glob | conditional | Match against the PEP-503 normalized name (the part before the trailing `_<64hex>`). Globs like `my*` or `myapp` are accepted. |
+| `--force` | flag | no | Skip the try-lock liveness check. Useful when a stuck holder needs to be cleared. See the **Liveness model** note below. |
+| `--dry-run` | flag | no | Print the action plan; do not modify the filesystem. |
+| `--show-sizes` | flag | no | Compute per-entry sizes for `keep`/`skip` rows (off by default for speed). `delete` and `orphan` rows always show what was freed. |
+| `-q`, `--quiet` | flag | no | Suppress the table; print only the trailer line on stdout. |
+| `-v`, `--verbose` | flag | no | Show full 64-char `build_id` hex in the table. |
+
+Bare `moonlit clean` (no `--all`, no `--older-than`, no `--keep-latest`, no `--name`) exits 2 with a usage message. There is no implicit "scan and report" default — that would tempt a "do nothing" mental model.
+
+When more than one of `--all`, `--older-than`, `--keep-latest`, `--name` is set, the deletion set is the intersection. `--keep-latest` is applied last, after the other filters narrow the candidate set.
+
+### Output
+
+The action plan is rendered as a table on stderr with columns `ACTION`, `NAME`, `BUILD_ID`, `AGE`, `SIZE`, `PATH`. The trailer is one line on stdout:
+
+```
+deleted N entries, freed <bytes_humanized>
+```
+
+`--dry-run` swaps the trailer to `would delete N entries, would free …` and leaves the filesystem alone. `--quiet` suppresses the table but the trailer stays on stdout.
+
+`ACTION` is one of:
+
+- `delete` — the entry will be removed (or was removed, in a real run).
+- `keep` — within a `--keep-latest` group, this is one of the N newest.
+- `skip` — a candidate that could not be deleted (its `<cache_key>.lock` is held and `--force` was not set). The reason appears in parentheses after the path.
+- `orphan` — a `.tmp.<pid>`/`.old.<pid>`/`.lock` sibling reaped because its owning cache_key is missing or being deleted.
+
+### Liveness model
+
+`moonlit clean` is **cooperative**. For each cache entry slated for deletion it tries to acquire `<cache_key>.lock` non-blocking. On success it holds the lock through the `rmtree`, so a concurrent extractor serializes against the deletion. On failure the entry is marked `skip (locked)`; the process exit code is 14 to signal partial completion.
+
+The bootstrap's cache-hit fast path reads `site-packages/` *without* holding the lock. `moonlit clean` therefore cannot detect a process that is mid-import. **Do not run `moonlit clean` while a moonlit `.pyz` is actively in use.** This is documented in `specs/CROSS_CUTTING_DECISIONS.md` D23.
+
+`--force` bypasses the try-lock entirely. The cache directory is deleted regardless of lock state; the lock file is left in place (a live holder still owns the byte range on Windows and we do not pull the rug). The next clean run will reap the lock file once nothing holds it.
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | All targeted entries deleted (or zero candidates matched). |
+| 2 | Usage error — no filter, bad `--older-than` syntax, negative `--keep-latest`, etc. |
+| 14 | `CleanRefusedError` — at least one entry was skipped because its lock was held and `--force` was not set. |
+| 15 | `CleanIOError` — an I/O failure during deletion (`rmtree` raised). Partial progress is possible; the trailer reports what was actually freed. |
+
+### Examples
+
+Preview what `--all` would delete without touching the filesystem:
+
+```sh
+moonlit clean --all --dry-run
+```
+
+Reap cache entries older than 30 days:
+
+```sh
+moonlit clean --older-than 30d
+```
+
+Keep the 3 newest builds per app, delete the rest:
+
+```sh
+moonlit clean --name '*' --keep-latest 3
+```
+
+Delete only `myapp` cache entries:
+
+```sh
+moonlit clean --name myapp
+```
+
+Force-delete a stuck cache (e.g. after a debugger killed an extracting process and left a stale lock):
+
+```sh
+moonlit clean --all --force
 ```
 
 ## `python -m moonlit`

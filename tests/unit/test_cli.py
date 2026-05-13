@@ -1403,3 +1403,80 @@ def test_windows_exe_with_python_version_respects_explicit_python(
     except SystemExit as exc:
         assert exc.code in (0, None)
     assert captured["config"].python_shebang == "C:\\custom\\python.exe"
+
+
+# ---------- §2.4 `moonlit clean` ----------
+
+
+def test_clean_help_to_stdout_exit_0(call_cli: Any) -> None:
+    code, stdout, _stderr = call_cli("clean", "--help")
+    assert code == 0
+    assert "Usage" in stdout
+    assert "clean" in stdout
+
+
+def test_clean_no_flags_exits_2_with_usage_message(call_cli: Any) -> None:
+    code, _stdout, stderr = call_cli("clean")
+    assert code == 2
+    assert "at least one of --all, --older-than, --keep-latest, --name" in stderr
+
+
+def test_clean_bad_older_than_exits_2(
+    call_cli: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOONLIT_ROOT", str(tmp_path))
+    code, _stdout, stderr = call_cli("clean", "--older-than", "garbage")
+    assert code == 2
+    assert "invalid duration" in stderr
+
+
+def test_clean_negative_keep_latest_exits_2(
+    call_cli: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOONLIT_ROOT", str(tmp_path))
+    code, _stdout, stderr = call_cli("clean", "--keep-latest", "-1")
+    assert code == 2
+    assert "--keep-latest must be >= 0" in stderr
+
+
+def test_clean_quiet_and_verbose_exit_2(
+    call_cli: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOONLIT_ROOT", str(tmp_path))
+    code, _stdout, stderr = call_cli("clean", "--all", "-q", "-v")
+    assert code == 2
+    assert "mutually exclusive" in stderr
+
+
+def test_clean_all_empty_cache_exit_0(
+    call_cli: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOONLIT_ROOT", str(tmp_path / "nonexistent"))
+    code, stdout, _stderr = call_cli("clean", "--all")
+    assert code == 0
+    assert "deleted 0 entries" in stdout
+
+
+def test_clean_all_deletes_real_cache_dirs(
+    call_cli: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOONLIT_ROOT", str(tmp_path))
+    hex_a = "a1b2c3d4" + "0" * 56
+    (tmp_path / f"myapp_{hex_a}" / "site-packages").mkdir(parents=True)
+    (tmp_path / f"myapp_{hex_a}" / "site-packages" / "f.dat").write_bytes(b"x" * 256)
+    code, stdout, _stderr = call_cli("clean", "--all")
+    assert code == 0
+    assert not (tmp_path / f"myapp_{hex_a}").exists()
+    assert "deleted 1 entries" in stdout
+
+
+def test_clean_dry_run_does_not_modify(
+    call_cli: Any, monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setenv("MOONLIT_ROOT", str(tmp_path))
+    hex_a = "a1b2c3d4" + "0" * 56
+    (tmp_path / f"myapp_{hex_a}" / "site-packages").mkdir(parents=True)
+    code, stdout, _stderr = call_cli("clean", "--all", "--dry-run")
+    assert code == 0
+    assert (tmp_path / f"myapp_{hex_a}").exists()
+    assert "would delete" in stdout
