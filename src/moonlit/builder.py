@@ -208,9 +208,7 @@ def _preflight_bundle_dir(output_path: Path, force: bool) -> None:
             f"output path is a directory but not a moonlit bundle: {output_path}"
         )
     if not force:
-        raise OutputExistsError(
-            f"output already exists; pass --force to overwrite: {output_path}"
-        )
+        raise OutputExistsError(f"output already exists; pass --force to overwrite: {output_path}")
 
 
 def _is_moonlit_bundle_dir(path: Path) -> bool:
@@ -477,7 +475,10 @@ def _write_archive_atomically(
     tmp_out = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
     try:
         entry_count = _create_archive(
-            tmp_out, staging, env_dict, prepend_launcher=config.windows_exe,
+            tmp_out,
+            staging,
+            env_dict,
+            prepend_launcher=config.windows_exe,
             python_shebang=config.python_shebang,
         )
         os.replace(tmp_out, output_path)
@@ -520,7 +521,10 @@ def _write_bundle_atomically(
         #    sibling .exe, not a prefix.
         inner_pyz = tmp_dir / f"{basename}.pyz"
         entry_count = _create_archive(
-            inner_pyz, staging, env_dict, prepend_launcher=False,
+            inner_pyz,
+            staging,
+            env_dict,
+            prepend_launcher=False,
             python_shebang=config.python_shebang,
         )
 
