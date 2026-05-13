@@ -325,9 +325,7 @@ def _plan_filters(
     return _split_keep_latest(candidates, config.keep_latest)
 
 
-def _split_keep_latest(
-    candidates: list[_Entry], keep: int
-) -> tuple[list[_Entry], list[_Entry]]:
+def _split_keep_latest(candidates: list[_Entry], keep: int) -> tuple[list[_Entry], list[_Entry]]:
     """Group by normalized name, keep ``keep`` newest per group, delete the rest."""
     grouped: dict[str, list[_Entry]] = {}
     for e in candidates:
@@ -490,26 +488,43 @@ def _process_delete(entry: _Entry, config: CleanConfig, *, now: float) -> _Proce
 
     if config.dry_run:
         if not config.force and _is_lock_held(_lock_path_for(entry)):
-            row = _Row("skip", name, build_id, _humanize_age(now - entry.mtime), None,
-                       str(entry.path), "locked")
+            row = _Row(
+                "skip",
+                name,
+                build_id,
+                _humanize_age(now - entry.mtime),
+                None,
+                str(entry.path),
+                "locked",
+            )
             return _ProcessResult(row=row, skipped=True, io_failure=False, freed=0)
         size = _walk_size(entry.path)
-        row = _Row("delete", name, build_id, _humanize_age(now - entry.mtime), size,
-                   str(entry.path), None)
+        row = _Row(
+            "delete", name, build_id, _humanize_age(now - entry.mtime), size, str(entry.path), None
+        )
         return _ProcessResult(row=row, skipped=False, io_failure=False, freed=size)
 
     try:
         freed, reason = _delete_cache_entry(entry, force=config.force)
     except OSError as exc:
-        row = _Row("skip", name, build_id, _humanize_age(now - entry.mtime), None,
-                   str(entry.path), f"io error: {exc}")
+        row = _Row(
+            "skip",
+            name,
+            build_id,
+            _humanize_age(now - entry.mtime),
+            None,
+            str(entry.path),
+            f"io error: {exc}",
+        )
         return _ProcessResult(row=row, skipped=False, io_failure=True, freed=0)
     if reason is not None:
-        row = _Row("skip", name, build_id, _humanize_age(now - entry.mtime), None,
-                   str(entry.path), reason)
+        row = _Row(
+            "skip", name, build_id, _humanize_age(now - entry.mtime), None, str(entry.path), reason
+        )
         return _ProcessResult(row=row, skipped=True, io_failure=False, freed=0)
-    row = _Row("delete", name, build_id, _humanize_age(now - entry.mtime), freed,
-               str(entry.path), None)
+    row = _Row(
+        "delete", name, build_id, _humanize_age(now - entry.mtime), freed, str(entry.path), None
+    )
     return _ProcessResult(row=row, skipped=False, io_failure=False, freed=freed)
 
 
@@ -547,8 +562,9 @@ def _make_keep_row(entry: _Entry, config: CleanConfig, *, now: float) -> _Row:
     name = parsed[0] if parsed else entry.name
     build_id = parsed[1] if parsed else ""
     size = _walk_size(entry.path) if config.show_sizes else None
-    return _Row("keep", name, build_id, _humanize_age(now - entry.mtime), size,
-                str(entry.path), None)
+    return _Row(
+        "keep", name, build_id, _humanize_age(now - entry.mtime), size, str(entry.path), None
+    )
 
 
 def _lock_path_for(entry: _Entry) -> Path:
@@ -601,9 +617,13 @@ def _print_table(rows: list[_Row], *, verbose: bool) -> None:
     sys_stderr.write("\n")
     for row in rows:
         size_col = "—" if row.size is None else humanize_bytes(row.size)
-        build_id_col = "—" if row.build_id == "—" else (row.build_id if verbose else row.build_id[:8])
+        build_id_col = (
+            "—" if row.build_id == "—" else (row.build_id if verbose else row.build_id[:8])
+        )
         path_col = row.path if row.reason is None else f"{row.path} ({row.reason})"
-        sys_stderr.write(_format_row((row.action, row.name, build_id_col, row.age, size_col, path_col), widths))
+        sys_stderr.write(
+            _format_row((row.action, row.name, build_id_col, row.age, size_col, path_col), widths)
+        )
         sys_stderr.write("\n")
 
 
@@ -648,9 +668,11 @@ def _print_trailer(config: CleanConfig, *, deleted_count: int, freed: int) -> No
 
 def _stdout():
     import sys
+
     return sys.stdout
 
 
 def _stderr():
     import sys
+
     return sys.stderr

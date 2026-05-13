@@ -568,9 +568,7 @@ def test_clean_dry_run_does_not_modify_filesystem(
     assert re.search(r"would delete 2 entries, would free \S+ \S+", out)
 
 
-def test_clean_table_emitted_to_stderr(
-    tmp_path: Path, capsys: pytest.CaptureFixture[str]
-) -> None:
+def test_clean_table_emitted_to_stderr(tmp_path: Path, capsys: pytest.CaptureFixture[str]) -> None:
     _make_cache_entry(tmp_path, f"myapp_{HEX_A}")
     clean_mod.clean(_config(cache_root=tmp_path, all_=True))
     out, err = capsys.readouterr()
@@ -613,9 +611,7 @@ def test_clean_dry_run_keep_action_shows_dash_size_by_default(
     _make_cache_entry(tmp_path, f"myapp_{HEX_A}", mtime=base - 1000)
     _make_cache_entry(tmp_path, f"myapp_{HEX_B}", mtime=base - 2000)
     # keep-latest 1 → HEX_A (newer) kept, HEX_B deleted.
-    clean_mod.clean(
-        _config(cache_root=tmp_path, keep_latest=1, dry_run=True, show_sizes=False)
-    )
+    clean_mod.clean(_config(cache_root=tmp_path, keep_latest=1, dry_run=True, show_sizes=False))
     _out, err = capsys.readouterr()
     # Find the keep row for HEX_A: SIZE column should be —
     keep_line = next(line for line in err.splitlines() if line.startswith("keep"))
@@ -628,11 +624,7 @@ def test_clean_show_sizes_populates_keep_rows(
     base = time.time()
     _make_cache_entry(tmp_path, f"myapp_{HEX_A}", mtime=base - 1000, file_size=2048)
     _make_cache_entry(tmp_path, f"myapp_{HEX_B}", mtime=base - 2000)
-    clean_mod.clean(
-        _config(
-            cache_root=tmp_path, keep_latest=1, dry_run=True, show_sizes=True
-        )
-    )
+    clean_mod.clean(_config(cache_root=tmp_path, keep_latest=1, dry_run=True, show_sizes=True))
     _out, err = capsys.readouterr()
     keep_line = next(line for line in err.splitlines() if line.startswith("keep"))
     assert "—" not in keep_line  # size populated
@@ -690,9 +682,7 @@ def test_clean_reaps_orphans_when_cache_key_missing(
     assert not lock.exists()
 
 
-def test_clean_io_error_returns_15(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_clean_io_error_returns_15(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     _make_cache_entry(tmp_path, f"myapp_{HEX_A}")
 
     def boom(*args, **kwargs):
