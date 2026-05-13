@@ -1,8 +1,9 @@
-"""End-to-end test of `moonlit build --windows-exe --bundle-python` (D21/D22).
+"""End-to-end test of `moonlit build --bundle-python` (D21 folder-bundle redesign).
 
-Builds a real `greeter`+`shouter` workspace, asks moonlit to embed a CPython
-interpreter inside the produced .exe, then runs the .exe with **PATH cleared**
-to prove that the bundled interpreter is what's actually doing the work.
+Builds a real `greeter`+`shouter` workspace, asks moonlit to bundle a CPython
+interpreter into a folder alongside the application zipapp, then runs the
+folder's launcher .exe with **PATH cleared** to prove that the bundled
+interpreter — not a system Python — is doing the work.
 
 Slow — shells out to ``uv python install`` which downloads ~30 MiB of
 python-build-standalone the first time, and to ``uv build`` for the wheels.
@@ -100,28 +101,28 @@ def demo_workspace(tmp_path: Path) -> Path:
     return root
 
 
-def _path_stripped_env(local_appdata_override: Path) -> dict[str, str]:
-    """Env for running the bundled .exe with PATH cleared.
+def _path_stripped_env() -> dict[str, str]:
+    """Env for running the bundled launcher with PATH cleared.
 
     The whole point of bundling is to work without Python on PATH. We
     deliberately strip every variable except the minimal Windows essentials
     (SystemRoot, SYSTEMDRIVE, COMSPEC, TEMP/TMP) so a system Python cannot
-    "rescue" the run. LOCALAPPDATA is redirected to a per-test directory so
-    no real bundled-Python cache from a previous run can satisfy the
-    launcher; the first run MUST exercise the full extract path.
+    "rescue" the run. LOCALAPPDATA is preserved because the bootstrap inside
+    the inner .pyz uses it for its own site-packages extract cache (D5/D6) —
+    that's the moonlit per-build cache, not the bundled-Python cache (which
+    no longer exists in the D21 redesign).
     """
-    keep = ("SystemRoot", "SYSTEMDRIVE", "COMSPEC", "TEMP", "TMP", "USERPROFILE")
+    keep = ("SystemRoot", "SYSTEMDRIVE", "COMSPEC", "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA")
     env = {k: os.environ[k] for k in keep if k in os.environ}
     env["PATH"] = ""
-    env["LOCALAPPDATA"] = str(local_appdata_override)
     # Strip any MOONLIT_* override so we exercise the default cache layout.
     return env
 
 
 def test_bundle_python_runs_with_path_cleared(demo_workspace: Path, tmp_path: Path) -> None:
-    """The full D21/D22 happy path: build → run with PATH="" → expected stdout."""
-    out_exe = tmp_path / "out" / "shouter.exe"
-    out_exe.parent.mkdir(parents=True)
+    """D21 happy path: build → run launcher with PATH="" → expected stdout."""
+    out_dir = tmp_path / "out" / "shouter"
+    out_dir.parent.mkdir(parents=True)
 
     build_proc = subprocess.run(
         [
@@ -134,10 +135,9 @@ def test_bundle_python_runs_with_path_cleared(demo_workspace: Path, tmp_path: Pa
             "shouter",
             "-e",
             "shouter.cli:main",
-            "--windows-exe",
             "--bundle-python",
             "-o",
-            str(out_exe),
+            str(out_dir),
         ],
         capture_output=True,
         text=True,
@@ -146,25 +146,40 @@ def test_bundle_python_runs_with_path_cleared(demo_workspace: Path, tmp_path: Pa
     assert build_proc.returncode == 0, (
         f"moonlit build failed:\nstdout={build_proc.stdout}\nstderr={build_proc.stderr}"
     )
-    assert out_exe.is_file()
-    # MZ header → PE binary in front (launcher prepended).
-    assert out_exe.read_bytes()[:2] == b"MZ"
 
-    # The zip body contains _python/ entries plus env.json with bundled_python.
-    with zipfile.ZipFile(out_exe, "r") as zf:
+    # 1. Output is a directory with the expected three children.
+    assert out_dir.is_dir()
+    basename = out_dir.name
+    launcher = out_dir / f"{basename}.exe"
+    app_pyz = out_dir / f"{basename}.pyz"
+    python_dir = out_dir / "_python"
+    assert launcher.is_file(), f"missing launcher .exe: {launcher}"
+    assert app_pyz.is_file(), f"missing app .pyz: {app_pyz}"
+    assert python_dir.is_dir(), f"missing _python/ dir: {python_dir}"
+    assert (python_dir / "python.exe").is_file()
+
+    # 2. Launcher is a PE with no appended zip — this is the AV-relevant win.
+    assert launcher.read_bytes()[:2] == b"MZ"
+    assert not zipfile.is_zipfile(launcher), (
+        "launcher .exe must NOT contain a trailing zip body — that's the "
+        "AV-trippy self-extracting-archive pattern the D21 redesign retired."
+    )
+
+    # 3. Inner .pyz IS a zipfile with the standard moonlit layout.
+    assert zipfile.is_zipfile(app_pyz)
+    with zipfile.ZipFile(app_pyz, "r") as zf:
         names = zf.namelist()
-        assert any(n.startswith("_python/") for n in names)
-        assert "_python/python.exe" in names
-        env = zf.read("env.json").decode("utf-8")
-    assert '"bundled_python"' in env
-    assert '"fingerprint"' in env
+        assert "env.json" in names
+        assert "__main__.py" in names
+        assert any(n.startswith("site-packages/") for n in names)
+        # env.json no longer carries a bundled_python field (D21h).
+        env_text = zf.read("env.json").decode("utf-8")
+    assert '"bundled_python"' not in env_text
 
-    # Run with PATH cleared and LOCALAPPDATA redirected.
-    local_appdata = tmp_path / "fake-localappdata"
-    local_appdata.mkdir()
-    env = _path_stripped_env(local_appdata)
+    # 4. Run the launcher with PATH cleared and verify the bundled Python ran.
+    env = _path_stripped_env()
     run_proc = subprocess.run(
-        [str(out_exe)],
+        [str(launcher)],
         capture_output=True,
         text=True,
         timeout=120,
@@ -175,20 +190,10 @@ def test_bundle_python_runs_with_path_cleared(demo_workspace: Path, tmp_path: Pa
     )
     assert "HELLO FROM GREETER" in run_proc.stdout
 
-    # First-run extraction populated the per-fingerprint cache.
-    moonlit_python_root = local_appdata / "moonlit" / "python"
-    assert moonlit_python_root.is_dir()
-    fingerprint_dirs = [p for p in moonlit_python_root.iterdir() if p.is_dir()]
-    assert len(fingerprint_dirs) == 1, fingerprint_dirs
-    fp_dir = fingerprint_dirs[0]
-    # The cache key is a 64-hex SHA-256, matches the env.json fingerprint, and
-    # the dispatched python.exe is present.
-    assert len(fp_dir.name) == 64
-    assert (fp_dir / "python.exe").is_file()
-
-    # Second run is a fast-path cache hit — no re-extract, same output.
+    # 5. Second run is a fast-path cache hit on the inner bootstrap — same
+    # output, no failure.
     run_proc2 = subprocess.run(
-        [str(out_exe)],
+        [str(launcher)],
         capture_output=True,
         text=True,
         timeout=60,

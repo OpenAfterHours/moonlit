@@ -1,32 +1,44 @@
 //! moonlit zipapp launcher.
 //!
-//! This binary is prepended (verbatim) to a Python zipapp by `moonlit build
-//! --windows-exe`. The on-disk layout of the produced `.exe` is:
+//! This binary serves two output shapes produced by `moonlit build`:
 //!
-//! ```text
-//! <this PE binary><b"#!"><python_shebang><b"\n"><zip body>
-//! ```
+//! 1. **Single-file `--windows-exe`** (no `--bundle-python`): the launcher PE
+//!    is prepended to `b"#!<python_shebang>\n"` and a zip body. On-disk:
 //!
-//! At run time we:
-//!   1. Locate ourselves on disk via `GetModuleFileNameW`.
-//!   2. Walk the PE section table to find the first byte past the PE image.
-//!   3. Read one line from there — the shebang. Strip `#!`, tokenize, get the
-//!      interpreter command. (If the line is missing or empty we fall back to
-//!      `py.exe -3`, the standard Windows Python launcher.)
-//!   4. `CreateProcessW(<interp> <shebang_args>... <self_path> <our_args>...)`
-//!      with inherited stdio, wait, forward the child's exit code.
+//!    ```text
+//!    <this PE binary><b"#!"><python_shebang><b"\n"><zip body>
+//!    ```
 //!
-//! Python's zipapp / zipimport machinery tolerates leading bytes before the
-//! ZIP central directory, so passing the .exe path as `argv[0]` to Python
-//! makes Python execute the trailing zip as a zipapp — the same trick the
-//! .pyz path uses with its `#!` shebang prefix.
+//!    At run time we walk the PE section table to find the trailing data,
+//!    read the shebang, and `CreateProcessW(<interp> <args>... <self_path> <our_args>...)`.
+//!    Python's zipapp / zipimport machinery tolerates leading bytes before
+//!    the ZIP central directory, so passing the .exe path as `argv[0]` to
+//!    Python makes Python execute the trailing zip as a zipapp.
+//!
+//! 2. **Folder bundle (`--bundle-python`)**: the launcher PE is a standalone
+//!    file in a bundle folder produced by moonlit:
+//!
+//!    ```text
+//!    <output>\
+//!    ├── <basename>.exe     ← this binary (no appended data)
+//!    ├── <basename>.pyz     ← the application zipapp
+//!    └── _python\python.exe ← the bundled CPython interpreter
+//!    ```
+//!
+//!    At run time we probe for the two sibling files; if both exist we
+//!    `CreateProcessW(<self_dir>\_python\python.exe -I <self_dir>\<basename>.pyz <our_args>...)`.
+//!    Nothing is extracted, no fingerprint, no lock, no AV-tripping heuristics
+//!    — the bundled Python on disk IS the cache.
+//!
+//! If the sibling probe finds nothing, the launcher falls through to the
+//! PE-end + shebang path. That preserves backward-compat for users who
+//! manually rename or move the launcher out of its folder, and is also how
+//! the single-file `--windows-exe` case dispatches.
 //!
 //! Stays small and dependency-light on purpose: every byte ships in front of
 //! every produced `.exe`.
 
 #![windows_subsystem = "console"]
-
-mod bundle;
 
 use std::ffi::{OsStr, OsString};
 use std::fs::File;
@@ -67,17 +79,15 @@ fn main() {
 
 fn run() -> Result<u32, String> {
     let self_path = self_path()?;
-    let mut file =
-        File::open(&self_path).map_err(|e| format!("cannot open self ({}): {e}", self_path.display()))?;
-    // D21/D22: bundled-Python path. The central directory is at the tail of
-    // the file regardless of any PE+shebang prefix, so we look there first.
-    // If the zip carries `_python/*` entries, we dispatch the bundled
-    // interpreter; otherwise we fall back to the historical shebang path.
-    if let Some(bundle) = bundle::detect_bundle(&mut file)? {
-        let cache_dir = bundle::bundled_cache_dir(&bundle.fingerprint)?;
-        bundle::ensure_extracted(&mut file, &bundle, &cache_dir)?;
-        return bundle::spawn_bundled_python(&cache_dir, &bundle.fingerprint, &self_path);
+    // D22a: folder-bundle probe. If we sit next to `_python\python.exe` and
+    // a matching `<stem>.pyz`, dispatch the bundled interpreter directly.
+    if let Some(folder) = detect_folder_bundle(&self_path) {
+        return spawn_folder_bundle(&folder);
     }
+    // Otherwise we're a single-file launcher prepended to a zipapp. Walk the
+    // PE section table to find the trailing data, read the shebang, dispatch.
+    let mut file = File::open(&self_path)
+        .map_err(|e| format!("cannot open self ({}): {e}", self_path.display()))?;
     let pe_end = find_pe_end(&mut file)?;
     let shebang_line = read_shebang_line(&mut file, pe_end)?;
     let (interpreter, extra_args) = parse_shebang(&shebang_line);
@@ -99,6 +109,85 @@ fn self_path() -> Result<PathBuf, String> {
         }
         // Buffer was too small (truncated); double and retry.
         buf.resize(buf.len() * 2, 0);
+    }
+}
+
+// ---------- folder-bundle probe (D22a) ----------
+
+/// A located folder bundle: the bundled `python.exe`, the application `.pyz`,
+/// and the running launcher (for forwarding `argv[0]` semantics if ever needed).
+pub(crate) struct FolderBundle {
+    pub python_exe: PathBuf,
+    pub app_pyz: PathBuf,
+}
+
+/// If `self_path` sits in a folder bundle (sibling `_python\python.exe` AND
+/// sibling `<stem>.pyz`), return their paths; otherwise None.
+///
+/// "Stem" is the file name with the final extension removed. We do not
+/// require any specific extension on `self_path` itself — the launcher is
+/// typically `<basename>.exe` but stem-based resolution does not care.
+pub(crate) fn detect_folder_bundle(self_path: &Path) -> Option<FolderBundle> {
+    let self_dir = self_path.parent()?;
+    let stem = self_path.file_stem()?;
+    let python_exe = self_dir.join("_python").join("python.exe");
+    let mut app_pyz = self_dir.join(stem);
+    app_pyz.set_extension("pyz");
+    if python_exe.is_file() && app_pyz.is_file() {
+        Some(FolderBundle { python_exe, app_pyz })
+    } else {
+        None
+    }
+}
+
+/// `CreateProcessW(<python_exe> -I <app_pyz> <forwarded args>)`, wait, forward
+/// the child's exit code. No env-block manipulation; the parent's environment
+/// is inherited as-is.
+fn spawn_folder_bundle(folder: &FolderBundle) -> Result<u32, String> {
+    let our_args: Vec<OsString> = std::env::args_os().skip(1).collect();
+    let mut parts: Vec<OsString> = Vec::with_capacity(3 + our_args.len());
+    parts.push(folder.python_exe.as_os_str().to_os_string());
+    // `-I` (isolated mode) implies `-E -s`: ignore PYTHONPATH and user
+    // site-packages. The bundled interpreter runs as if freshly installed.
+    parts.push(OsString::from("-I"));
+    parts.push(folder.app_pyz.as_os_str().to_os_string());
+    parts.extend(our_args);
+    let parts_refs: Vec<&OsStr> = parts.iter().map(|s| s.as_os_str()).collect();
+    let mut cmdline_w = build_cmdline_w(&parts_refs);
+
+    let mut si: STARTUPINFOW = unsafe { mem::zeroed() };
+    si.cb = mem::size_of::<STARTUPINFOW>() as u32;
+    let mut pi: PROCESS_INFORMATION = unsafe { mem::zeroed() };
+
+    let ok = unsafe {
+        CreateProcessW(
+            ptr::null(),               // lpApplicationName: NULL → search PATH for first cmdline token
+            cmdline_w.as_mut_ptr(),    // lpCommandLine (writable per Win32 contract)
+            ptr::null_mut(),
+            ptr::null_mut(),
+            TRUE,                      // bInheritHandles → inherit stdio
+            0,
+            ptr::null(),               // lpEnvironment (inherit)
+            ptr::null(),               // lpCurrentDirectory (inherit)
+            &si,
+            &mut pi,
+        )
+    };
+    if ok == 0 {
+        let err = unsafe { GetLastError() };
+        return Err(format!(
+            "cannot launch bundled python ({}): GetLastError={}",
+            folder.python_exe.display(),
+            err
+        ));
+    }
+    unsafe {
+        WaitForSingleObject(pi.hProcess, INFINITE);
+        let mut code: u32 = 0;
+        GetExitCodeProcess(pi.hProcess, &mut code);
+        CloseHandle(pi.hThread);
+        CloseHandle(pi.hProcess);
+        Ok(code)
     }
 }
 
@@ -345,6 +434,7 @@ fn io_err<E: std::fmt::Display>(e: E) -> String {
 mod tests {
     use super::*;
     use std::ffi::OsString;
+    use std::fs;
     use std::io::Write;
 
     /// Build a minimal valid PE file in memory with `n` sections; each section
@@ -405,6 +495,27 @@ mod tests {
             .expect("create temp");
         f.write_all(bytes).expect("write");
         f
+    }
+
+    fn unique_bundle_dir(tag: &str) -> PathBuf {
+        use std::sync::atomic::{AtomicU64, Ordering};
+        static COUNTER: AtomicU64 = AtomicU64::new(0);
+        let id = COUNTER.fetch_add(1, Ordering::Relaxed);
+        let p = std::env::temp_dir().join(format!(
+            "moonlit-launcher-bundle-{tag}-{}-{}",
+            std::process::id(),
+            id
+        ));
+        let _ = fs::remove_dir_all(&p);
+        fs::create_dir_all(&p).expect("create bundle dir");
+        p
+    }
+
+    fn touch(path: &Path) {
+        if let Some(parent) = path.parent() {
+            fs::create_dir_all(parent).expect("mkdir -p");
+        }
+        fs::write(path, b"").expect("touch");
     }
 
     #[test]
@@ -534,5 +645,67 @@ mod tests {
     fn build_cmdline_quotes_empty_arg() {
         let s = cmdline_to_string(&[OsStr::new("python.exe"), OsStr::new("")]);
         assert_eq!(s, r#"python.exe """#);
+    }
+
+    // ---------- folder-bundle probe ----------
+
+    #[test]
+    fn detect_folder_bundle_returns_some_when_siblings_present() {
+        // Layout:
+        //   <dir>/foo.exe        (the launcher; doesn't need to be a real PE)
+        //   <dir>/foo.pyz
+        //   <dir>/_python/python.exe
+        let dir = unique_bundle_dir("happy");
+        let exe = dir.join("foo.exe");
+        touch(&exe);
+        touch(&dir.join("foo.pyz"));
+        touch(&dir.join("_python").join("python.exe"));
+
+        let bundle = detect_folder_bundle(&exe).expect("bundle should be detected");
+        assert!(bundle.python_exe.ends_with("_python\\python.exe")
+            || bundle.python_exe.ends_with("_python/python.exe"));
+        assert!(bundle.app_pyz.ends_with("foo.pyz"));
+
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn detect_folder_bundle_returns_none_when_python_missing() {
+        let dir = unique_bundle_dir("no-python");
+        let exe = dir.join("foo.exe");
+        touch(&exe);
+        touch(&dir.join("foo.pyz"));
+        // No _python/ directory at all.
+        assert!(detect_folder_bundle(&exe).is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn detect_folder_bundle_returns_none_when_pyz_missing() {
+        let dir = unique_bundle_dir("no-pyz");
+        let exe = dir.join("foo.exe");
+        touch(&exe);
+        // Note: missing foo.pyz sibling.
+        touch(&dir.join("_python").join("python.exe"));
+        assert!(detect_folder_bundle(&exe).is_none());
+        fs::remove_dir_all(&dir).ok();
+    }
+
+    #[test]
+    fn detect_folder_bundle_uses_self_stem_for_pyz_name() {
+        // A launcher renamed to `BAR.exe` looks for `BAR.pyz`, not `foo.pyz`.
+        // Filesystem case sensitivity differs on Windows; here we just check
+        // that a mismatched-stem `.pyz` is rejected.
+        let dir = unique_bundle_dir("stem");
+        let exe = dir.join("bar.exe");
+        touch(&exe);
+        touch(&dir.join("foo.pyz")); // wrong stem
+        touch(&dir.join("_python").join("python.exe"));
+        assert!(detect_folder_bundle(&exe).is_none());
+
+        // With the right stem name, it does match.
+        touch(&dir.join("bar.pyz"));
+        assert!(detect_folder_bundle(&exe).is_some());
+        fs::remove_dir_all(&dir).ok();
     }
 }

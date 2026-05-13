@@ -25,19 +25,9 @@ overflow-checks = false
 [dependencies]
 # CreateProcessW takes SECURITY_ATTRIBUTES pointers, so Win32_Security is needed
 # alongside Win32_System_Threading; otherwise its binding is gated out.
-# Win32_System_IO is added for OVERLAPPED used by LockFileEx (D22 bundled-python
-# extract).
 windows-sys = { version = "0.59", features = [
     "Win32_Foundation",
     "Win32_Security",
-    "Win32_Storage_FileSystem",
-    "Win32_System_IO",
     "Win32_System_LibraryLoader",
     "Win32_System_Threading",
 ] }
-# D22: bundled-Python feature needs deflate (zip method 8) and SHA-256
-# (fingerprint). Both are pure-Rust, no_std-friendly, transitive-free.
-# miniz_oxide adds ~30 KiB; sha2 adds ~25 KiB. Total cost is dwarfed by the
-# ~30 MiB Python distribution the .exe carries when bundling.
-miniz_oxide = { version = "0.7", default-features = false, features = ["with-alloc"] }
-sha2 = { version = "0.10", default-features = false }

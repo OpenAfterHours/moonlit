@@ -279,45 +279,71 @@ The bootstrap, env.json, cache layout, and zip body are unaffected by D19. The l
 
 ## D21 — Bundled-Python build option (`--bundle-python`)
 
-When `--bundle-python` is set, the build produces a `.exe` that embeds a full Python interpreter under `_python/` in the zip body. The launcher (D22) unpacks and dispatches it on first run, so end-users can run the `.exe` without Python installed on PATH. Phase 1 is Windows-only; POSIX is deferred.
+When `--bundle-python` is set, the build produces a **folder** that contains a thin launcher `.exe`, the application zipapp, and a python-build-standalone CPython distribution as sibling files. The launcher (D22) finds the bundled interpreter via a sibling-file probe and spawns it directly — nothing is extracted at runtime. Phase 1 is Windows-only; POSIX is deferred.
 
-**D21a — CLI shape and gating.** `--bundle-python` requires `--windows-exe` (spec 01 §3 rule 6, invariant I13). The CLI rejects the combination as a usage error (exit 2). `BuildConfig.bundle_python: bool = False` carries the flag; `_validate_config` raises `InternalError` (11) if `bundle_python and not windows_exe`, defensive against programmatic callers.
+Rationale: the prior v0.3.0 shape (single `.exe` with the Python tree embedded in the trailing zip and extracted to `%LOCALAPPDATA%` on first run) tripped Windows Defender's `Trojan:Win32/Wacatac.B!ml` heuristic for corporate users — that pattern is indistinguishable from a self-extracting trojan to AV scanners. Putting the Python tree on disk next to the launcher eliminates the runtime extraction step and so eliminates the heuristic trigger.
 
-**D21b — Python source: `uv python install`.** The only `uv` subcommand added is `uv python install`. The new resolver function is:
+**D21a — On-disk layout.** For `-o C:\out\myapp` the produced bundle is:
+
+```
+C:\out\myapp\
+├── myapp.exe       # vendored Rust launcher (no appended zip, no embedded interpreter)
+├── myapp.pyz       # the application zipapp — byte-identical to a non-bundle build
+└── _python\        # python-build-standalone tree, verbatim from `uv python install`
+    ├── python.exe
+    ├── python3XX.dll
+    ├── Lib\
+    └── …
+```
+
+`<basename>` is the file name of the `-o` path. The launcher's filename, the `.pyz` filename, and the directory's name all share that basename — that is the contract the launcher's sibling probe relies on (D22a).
+
+**D21b — CLI shape and gating.** `--bundle-python` is sufficient by itself; it no longer requires `--windows-exe`. When `--bundle-python` is set, `-o` is treated as a target directory path: it MUST NOT end in `.exe` or `.pyz` (the CLI rejects either as a usage error). `--windows-exe` is accepted alongside `--bundle-python` and is a no-op in that combination (a folder bundle always contains a launcher `.exe` by construction).
+
+**D21c — Python source: `uv python install`.** Unchanged from v0.3.0:
 
 ```
 uv python install --install-dir <staging>/python --no-bin --no-registry <version>
 ```
 
-- `<version>` is `BuildConfig.python_version` (e.g. `"3.13"`) when set, else `f"{sys.version_info.major}.{sys.version_info.minor}"` — same fallback as `env.json.python_version` (D20c), so a bundle's interpreter version stays consistent with what the build pipeline targeted.
-- `--no-bin` skips installing executables under the bin directory; `--no-registry` (Windows-only flag, harmless elsewhere) skips Windows-registry registration. Both keep the install fully isolated to the staging dir.
-- uv emits exactly one distribution directory under `--install-dir`, named like `cpython-3.13.X-windows-x64-none/`. The resolver discovers it by listing the install dir after a successful run — the patch version is never hardcoded. Anything other than exactly one child dir → `PythonBundleError`.
+- `<version>` is `BuildConfig.python_version` (e.g. `"3.13"`) when set, else `f"{sys.version_info.major}.{sys.version_info.minor}"` — same fallback as `env.json.python_version` (D20c).
+- `--no-bin` skips installing executables under the bin directory; `--no-registry` (Windows-only, harmless elsewhere) skips Windows-registry registration.
+- uv emits exactly one distribution directory under `--install-dir`, named like `cpython-3.13.X-windows-x64-none/`. The resolver discovers it by listing the install dir; the patch version is never hardcoded. Anything other than exactly one child dir → `PythonBundleError`.
 
-**D21c — Error class and exit code.** `PythonBundleError(MoonlitError, exit_code=13)` covers (a) non-zero exit from `uv python install`, (b) the discovery rule above (zero or >1 child dir), and (c) any I/O failure copying the distribution into the build's zip stream. Falls back to exit 3 (`UvNotFoundError`) when `uv` itself is missing from PATH, preserving the resolver's universal pattern.
+**D21d — Error class and exit code.** `PythonBundleError(MoonlitError, exit_code=13)` covers (a) non-zero exit from `uv python install`, (b) the discovery rule above, and (c) any I/O failure when assembling the output folder. Falls back to exit 3 (`UvNotFoundError`) when `uv` itself is missing from PATH.
 
-**D21d — Pipeline placement.** `uv python install` runs as a new **step 8.5** in spec 02 §3, strictly between step 8 (`compute_build_id` over staged `site-packages/`) and the env.json dict build. This is the load-bearing ordering: `compute_build_id` MUST run before the Python tree is touched so the per-app cache key is independent of which CPython patch uv shipped that day. Build_id stability is the falsifier — two `--bundle-python` builds across a `uv python install` upgrade produce the same `build_id`, only the bundled-python fingerprint and the `_python/*` zip entries change.
+**D21e — Pipeline placement.** `uv python install` runs as a new **step 8.5** in spec 02 §3, strictly between step 8 (`compute_build_id` over staged `site-packages/`) and the archive-write step. The ordering ensures build_id is independent of which CPython patch uv shipped that day: two `--bundle-python` builds across a `uv python install` patch upgrade produce the same `build_id` and the same `<basename>.pyz` bytes; only the contents of `_python/` differ.
 
-**D21e — Cross-platform host today.** Phase 1 runs on Windows hosts producing Windows bundles. The Rust launcher binaries under `_launchers/` are Windows PE only; the bundled-Python feature has the same host-and-target scope as `--windows-exe`. Cross-OS builds (host = Linux → `.exe` for Windows) are explicitly deferred under D20e's umbrella.
+**D21f — Folder-assembly atomicity.** The output folder is built atomically: every file lands first under `<output>.tmp.<pid>/` inside the parent directory, then the staging dir is moved into place via the D4 directory-replace protocol. A crashed or SIGINT'd build leaves no half-written `<output>/` directory.
 
-## D22 — Launcher bundled-Python cache and dispatch
+**D21g — `--force` semantics for folder targets.** A folder target may be overwritten with `--force` only when the existing `<output>/` is a directory containing `<basename>.exe` AND `<basename>.pyz` AND `_python/python.exe` — the signature of a moonlit-built bundle. Any other existing path at `-o` (regular file, foreign directory, symlink, etc.) is rejected even under `--force`. This prevents `--force` from turning into an `rm -rf` of an unrelated directory the user happens to have named the same.
 
-The Rust launcher under `launcher/src/bundle.rs` implements the runtime side of `--bundle-python` (D21). It runs before any Python code and is the only piece on disk that can dispatch a Python interpreter on a Python-free machine.
+**D21h — env.json is not specialised.** `env.json` inside `<basename>.pyz` is byte-identical between bundle and non-bundle builds (modulo the `built_at` timestamp). No `bundled_python` field is emitted; the on-disk folder layout is the authoritative "this artifact ships Python" signal. The bootstrap inside the `.pyz` does not need to know whether the interpreter that loaded it came from `_python/` or from `PATH`.
 
-**D22a — Detection.** Before the historical shebang path, the launcher seeks to the file's tail, scans backward for the EOCD signature (`PK\x05\x06` within the last 65557 bytes, plus zip64 fallback for the rare large-zip case), parses the central directory, and looks for any entry whose filename starts with `_python/`. If none, the launcher falls through to its pre-D22 shebang behavior (the `.exe` was built without `--bundle-python`). Detection does NOT consult `env.json` — the central directory is authoritative and reading it in Rust is cheap.
+**D21i — Cross-platform host today.** Phase 1 runs on Windows hosts producing Windows bundles. The Rust launcher binaries under `_launchers/` are Windows PE only. Cross-OS builds are deferred under D20e's umbrella.
 
-**D22b — Fingerprint.** The launcher computes its own fingerprint by replaying the spec 02 §4a recipe over the `_python/*` central-directory entries it just walked: sort by UTF-8 byte filename, then SHA-256-stream `filename || \0 || crc32_le(4 bytes) || \0` per entry. The CRC32 is taken from the central directory record (no decompression). The producer and launcher MUST agree byte-for-byte; the test `bundle::tests::fingerprint_matches_python_reference_value` pins a value computed externally by Python `hashlib.sha256` + `zlib.crc32` against the Rust output.
+## D22 — Launcher dispatch (sibling-probe mode)
 
-**D22c — Cache layout.** Per-fingerprint extraction sits at `%LOCALAPPDATA%\moonlit\python\<fingerprint>\` (the extracted dist tree, `python.exe` at the root) with a sibling `<fingerprint>.lock` for the first-run lock. If `LOCALAPPDATA` is unset, the launcher errors out with `"LOCALAPPDATA is not set; bundled Python cache unreachable"`. This is the bundled-Python cache; it is INDEPENDENT of the moonlit per-build cache (D5/D6) which is keyed by `build_id` and lives under the same parent (`%LOCALAPPDATA%\moonlit\`) but is the bootstrap's responsibility, not the launcher's.
+The Rust launcher binary serves two output shapes:
 
-**D22d — Lock protocol.** Win32 `CreateFileW` on `<fingerprint>.lock` with `OPEN_ALWAYS | GENERIC_READ|GENERIC_WRITE | FILE_SHARE_READ|FILE_SHARE_WRITE`, then `LockFileEx(LOCKFILE_EXCLUSIVE_LOCK | LOCKFILE_FAIL_IMMEDIATELY)`. On contention (`ERROR_LOCK_VIOLATION` 33) the launcher polls every 50 ms with a 60 s ceiling — same numerical parameters as D13 on the Python side. The lock is released when the file handle closes; the lock file persists. Do NOT unlink the lock file after release — `LockFileEx` is per-open-file-description and a concurrent opener would race.
+1. **Single-file `--windows-exe`** (no `--bundle-python`): the launcher PE is prepended to a `#!shebang\n` line and a zip body. At runtime it parses its own PE section table to find the trailing data, reads the shebang, and `CreateProcessW`s the interpreter named in the shebang against `self_path`.
+2. **Folder bundle (`--bundle-python`)**: the launcher PE is a standalone file in the bundle folder. At runtime it probes for sibling files and, if present, spawns the bundled interpreter directly.
 
-**D22e — Double-checked first-run.** Fast path (no lock): if `<cache>\python.exe` exists, skip the extract. Slow path: acquire the lock, re-check the fast-path predicate (a sibling may have completed extraction between the predicate and the lock), then extract to `<fingerprint>.tmp.<pid>\` and `MoveFileExW(tmp, cache, REPLACE_EXISTING)` (mirrors D4 + D15 on the Python side). The kernel releases the lock on process death; no jamming after a crash.
+**D22a — Sibling probe (folder mode).** Before any PE / trailing-zip parsing, the launcher computes `<self_dir>` = parent of `self_path` and `<stem>` = file stem of `self_path` (everything before the final `.exe` extension). It then tests:
 
-**D22f — Spawn.** `<cache>\python.exe -I <self_path> <forwarded args>` via `CreateProcessW` with inherited stdio, `CREATE_UNICODE_ENVIRONMENT`, and a child environment derived from the parent's plus `MOONLIT_BUNDLED_PYTHON=<fingerprint>`. `-I` (isolated mode) implies `-E -s` and ignores `PYTHONPATH`/user site-packages — the bundled CPython runs as if installed cleanly. The `MOONLIT_BUNDLED_PYTHON` env var is the carve-out signal the bootstrap reads at spec 03 §2 step 4a to skip its python-version mismatch check (the bundled interpreter is, by construction, the right one).
+```
+exists(<self_dir>\_python\python.exe) AND exists(<self_dir>\<stem>.pyz)
+```
 
-**D22g — Zip parsing scope.** The launcher implements its own minimal central-directory walker (`launcher/src/bundle.rs::read_central_directory`) — no `zip` crate, no `flate2`. Two and only two added crate dependencies: `miniz_oxide` (deflate, ~30 KiB) and `sha2` (~25 KiB). The walker tolerates zip64 (offset/size/count of `0xFFFFFFFF`/`0xFFFF` triggers a Zip64 EOCD locator + Zip64 EOCD read). Local-file-header reads use the per-entry offset from the CD record to avoid scanning. Zip-slip is rejected at extract time (`..` or empty segments in the relative arcname → error).
+If both succeed, the launcher is in a folder bundle: it `CreateProcessW`s `<self_dir>\_python\python.exe -I <self_dir>\<stem>.pyz <forwarded args>` with inherited stdio, waits, and forwards the exit code. The `-I` (isolated mode) flag is the same `-E -s` combination v0.3.0 used: the bundled interpreter runs as if freshly installed, immune to `PYTHONPATH` and user site-packages leaks on the host.
 
-**D22h — Phase-1 scope.** Windows host produces Windows `.exe`; no POSIX launcher binaries today. Cross-OS targets are deferred under D20e's umbrella. `.exe` size grows by the size of the python-build-standalone distribution (~30 MiB compressed) when `--bundle-python` is set.
+If either probe target is missing, the launcher falls through to the PE-end + shebang path (single-file mode), unchanged from before D21. This preserves the contract for `--windows-exe`-only builds and for users who manually rename or move the launcher out of its folder.
+
+**D22b — No runtime extraction, no fingerprint, no env-block.** The launcher does NOT walk the central directory, does NOT compute any hash, does NOT acquire any lock, does NOT extract anything to disk, and does NOT inject `MOONLIT_BUNDLED_PYTHON` (or any other variable) into the child environment. The bundled Python on disk IS the cache. The launcher is a process shim, nothing more.
+
+**D22c — Crate dependencies.** Only `windows-sys` is required; `miniz_oxide` and `sha2` (added in v0.3.0 for the runtime-extraction path) are removed. Launcher binary size drops accordingly — from ~200 KiB to ~30–50 KiB per arch under the MSVC toolchain.
+
+**D22d — Phase-1 scope.** Windows host produces Windows bundles. Cross-OS targets are deferred under D20e's umbrella. A bundled folder's on-disk size is dominated by `_python/` (~30 MiB uncompressed for python-build-standalone).
 
 ---
 

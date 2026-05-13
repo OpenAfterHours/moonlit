@@ -31,14 +31,14 @@ moonlit build [PROJECT] -e <entry> | -c <script> -o <output> [flags]
 |---|---|---|---|---|---|
 | `-e` | `--entry-point` | `module:callable` | one-of `{-e, -c}` | — | Entry point string baked into `env.json`. |
 | `-c` | `--console-script` | string | one-of `{-e, -c}` | — | Console-script name; resolved against staged `*.dist-info/entry_points.txt`. |
-| `-o` | `--output-file` | path | yes | — | Destination `.pyz` (or `.exe` with `--windows-exe`). |
+| `-o` | `--output-file` | path | yes | — | Destination `.pyz` (or `.exe` with `--windows-exe`). With `--bundle-python` set, this is a **directory path** instead — it MUST NOT end in `.exe` or `.pyz`. |
 | `-p` | `--python` | string | no | `/usr/bin/env python3` | Shebang line baked into `env.json` and prefixed to the artifact. ASCII only, no `\n`/`\r`/`\x00`, ≤127 bytes. With `--windows-exe`, the default pivots to `python.exe` (or `py -<X.Y>` when `--python-version` is set). |
 |  | `--package` | string | iff workspace | — | Workspace member to build; required iff `[tool.uv.workspace]` is present, forbidden otherwise. PEP 503 normalized on both sides. |
 |  | `--no-dev` | flag | no | (default) | Exclude dev-group dependencies (default behavior). |
 |  | `--dev` | flag | no | off | Opt in to dev-group dependencies. Mutually exclusive with `--no-dev`. |
 |  | `--windows-exe` | flag | no | off | Produce a native Windows `.exe` (small Rust launcher prepended to the same zip body) instead of a `.pyz`. Requires `-o` to end in `.exe`. The recipient still needs a Python interpreter on `PATH` or registered with `py.exe`. |
 |  | `--python-version` | string `<X.Y>` | no | build host's `sys.version_info.major.minor` | Target Python `major.minor` for cross-interpreter builds (e.g. `3.12`). Threads through every `uv` invocation as `--python <X.Y>` so wheels are tagged for that ABI; stamped into `env.json.python_version`. uv auto-fetches a managed standalone CPython if the requested version isn't locally installed. Format: `^\d+\.\d+$`. |
-|  | `--bundle-python` | flag | no | off | Embed a managed standalone CPython under `_python/` inside the produced artifact so recipients without a Python interpreter on `PATH` can still run it. Requires `--windows-exe`; the launcher unpacks the bundle on first run and dispatches it. uv fetches the interpreter for `--python-version` (or the build host's version if unset). Adds `bundled_python` to `env.json` (see [Runtime → env.json schema](runtime.md#envjson-schema)). |
+|  | `--bundle-python` | flag | no | off | Produce a self-contained **directory bundle** instead of a single file. The bundle contains `<basename>.exe` (a thin Rust launcher), `<basename>.pyz` (the application zipapp), and `_python\` (a managed CPython tree from `uv python install`). Recipients without Python on `PATH` run `<basename>.exe`, which probes for the sibling `_python\python.exe` and spawns it directly — nothing is extracted at runtime, which avoids the `Trojan:Win32/Wacatac.B!ml` false positives that hit moonlit 0.3.0's single-file bundle shape. With this flag, `-o` is a directory path; it MUST NOT end in `.exe` or `.pyz`. `--windows-exe` may be set alongside but is a no-op (the folder always contains a launcher `.exe`). |
 |  | `--force` | flag | no | off | Overwrite an existing regular-file output. Does **not** override a directory target. |
 | `-q` | `--quiet` | flag | no | off | Suppress progress output on stderr; the success line on stdout is preserved. |
 | `-v` | `--verbose` | flag | no | off | On error, append the full traceback to stderr. Mutually exclusive with `--quiet`. |
@@ -50,9 +50,9 @@ moonlit build [PROJECT] -e <entry> | -c <script> -o <output> [flags]
 - `-q` and `-v` are mutually exclusive → exit 2.
 - `--no-dev` and `--dev` are mutually exclusive → exit 2.
 - `--package` is required iff the project is a uv workspace → exit 5 on mismatch.
-- `--windows-exe` requires `--output-file` to end in `.exe` (case-insensitive) → exit 2.
+- `--windows-exe` (without `--bundle-python`) requires `--output-file` to end in `.exe` (case-insensitive) → exit 2.
 - `--python-version` must match `^\d+\.\d+$` (major.minor only) → exit 2.
-- `--bundle-python` requires `--windows-exe` → exit 2. (The launcher is what dispatches the embedded interpreter; a bare `.pyz` has nothing to dispatch it.)
+- `--bundle-python` rejects `--output-file` values ending in `.exe` or `.pyz` → exit 2. With `--bundle-python` the output is a directory; the directory's basename is reused for the launcher and inner zipapp filenames inside.
 - When `--windows-exe` AND `--python-version` are set AND `-p` is at its default, the default shebang pivots from `python.exe` to `py -<X.Y>` so the recipient's PEP 397 launcher pins to the matching interpreter.
 - The `MOONLIT_*` environment variables are runtime-only; they are *ignored* during a build.
 
@@ -147,12 +147,23 @@ Produce a native Windows `.exe` pinned to Python 3.12 (shebang auto-pivots to `p
 moonlit build --windows-exe --python-version 3.12 -e myapp.cli:main -o myapp.exe
 ```
 
-Produce a fully self-contained `.exe` that embeds a managed CPython under `_python/` so recipients don't need Python installed:
+Produce a fully self-contained **folder bundle** that ships a managed CPython next to a thin launcher `.exe` so recipients don't need Python installed:
 
 ```sh
-moonlit build --windows-exe --bundle-python --python-version 3.12 \
-    -e myapp.cli:main -o myapp.exe
+moonlit build --bundle-python --python-version 3.12 \
+    -e myapp.cli:main -o dist/myapp
 ```
+
+The bundle directory layout:
+
+```
+dist/myapp/
+├── myapp.exe       # the launcher (runs ./_python/python.exe ./myapp.pyz)
+├── myapp.pyz       # the application zipapp
+└── _python/        # bundled CPython tree (~30 MiB)
+```
+
+Distribute the folder (typically by zipping it) and run `myapp\myapp.exe`. The folder-bundle shape replaces the v0.3.0 single-`.exe` `--bundle-python` output, which tripped Windows Defender's ML heuristics for self-extracting archives. The new shape extracts nothing at runtime and so isn't flagged.
 
 ## `moonlit info`
 
@@ -166,7 +177,7 @@ Print the `env.json` manifest of a moonlit-built archive. `<pyz>` must resolve t
 |---|---|
 | `--json` | Emit the raw `env.json` bytes to stdout with no header. Useful for piping to `jq`. |
 
-**Default output**: a one-line header `<path> (<size>, <N> entries)` followed by a sorted listing of the manifest's required fields (`build_id`, `built_at`, `entry_point`, `moonlit_version`, `name`, `python_shebang`, `schema_version`). The optional `python_version` and `bundled_python` fields are **not** included in the default listing today; use `--json` to see them.
+**Default output**: a one-line header `<path> (<size>, <N> entries)` followed by a sorted listing of the manifest's required fields (`build_id`, `built_at`, `entry_point`, `moonlit_version`, `name`, `python_shebang`, `schema_version`). The optional `python_version` field is **not** included in the default listing today; use `--json` to see it.
 
 If the input is not a zipfile, or `env.json` is missing/malformed, exit 12 with `BadArchiveError: <reason>` on stderr.
 

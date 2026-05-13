@@ -90,7 +90,7 @@ def cli(ctx: click.Context) -> None:
     "output_file",
     required=True,
     type=click.Path(),
-    help="Destination .pyz path.",
+    help="Destination path. .pyz/.exe for single-file modes; directory for --bundle-python.",
 )
 @click.option(
     "-p",
@@ -141,7 +141,11 @@ def cli(ctx: click.Context) -> None:
     "bundle_python",
     is_flag=True,
     default=False,
-    help="Embed a Python interpreter inside the .exe (requires --windows-exe). See D21.",
+    help=(
+        "Produce a self-contained directory bundle (launcher.exe + .pyz + _python/) "
+        "so recipients without Python installed can run the app. -o names the output "
+        "directory; it MUST NOT end in .exe or .pyz. See D21."
+    ),
 )
 @click.option(
     "--force",
@@ -178,12 +182,18 @@ def build_cmd(
         raise click.UsageError("--quiet and --verbose are mutually exclusive")
     if no_dev_flag and dev_flag:
         raise click.UsageError("--no-dev and --dev are mutually exclusive")
-    if bundle_python and not windows_exe:
-        # spec §3 rule 6 / D21 / invariant I13: bundled python is dispatched by
-        # the Windows launcher, so a bare .pyz output has nothing to dispatch it.
-        raise click.UsageError("--bundle-python requires --windows-exe")
-    if windows_exe and not output_file.lower().endswith(".exe"):
-        # spec §3 rule 5 / D19b: --windows-exe demands an .exe output suffix.
+    if bundle_python:
+        # spec §3 rule 6 / D21b: -o names a directory; .exe and .pyz suffixes
+        # are rejected so a user who passes the old "app.exe" target gets a
+        # clear error rather than a confusing directory at that path.
+        lower = output_file.lower()
+        if lower.endswith(".exe") or lower.endswith(".pyz"):
+            raise click.UsageError(
+                "--bundle-python output is a directory; --output-file MUST NOT end in .exe or .pyz"
+            )
+    elif windows_exe and not output_file.lower().endswith(".exe"):
+        # spec §3 rule 5 / D19b: --windows-exe (without --bundle-python) demands
+        # an .exe output suffix.
         raise click.UsageError("--windows-exe requires --output-file to end in .exe")
     if python_version is not None:
         _validate_python_version(python_version)

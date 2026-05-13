@@ -66,10 +66,11 @@ class BuildConfig:
     # build host's. Stamped into env.json's `python_version` for the runtime
     # mismatch check (spec 03 §2 step 4a).
     python_version: str | None = None
-    # D21: when True, embed a Python interpreter under `_python/` in the zip
-    # body so end-users without Python installed can still run the .exe. The
-    # launcher (D22) unpacks it on first run and dispatches it. Only valid
-    # together with windows_exe=True; the CLI enforces this (invariant I13).
+    # D21: when True, produce a *folder* containing <basename>.exe (launcher),
+    # <basename>.pyz (the application zipapp), and _python/ (a managed CPython
+    # tree). Recipients without Python installed can still run the bundle by
+    # invoking <basename>.exe; the launcher (D22) finds the bundled interpreter
+    # via a sibling-file probe and spawns it directly. No runtime extraction.
     bundle_python: bool = False
 
 
@@ -83,14 +84,11 @@ class _Target:
 
 @dataclass(frozen=True)
 class _BundledPython:
-    """Step 8.5 result: where the bundled Python tree was installed plus its
-    cross-language fingerprint (D21/D22). Threaded through env_dict + archive.
+    """Step 8.5 result: the python-build-standalone distribution dir that will
+    be copied verbatim into the output folder's ``_python/`` subdirectory (D21).
     """
 
     dist_root: Path
-    fingerprint: str
-    arcname_prefix: str  # always "_python/" in v1; kept explicit for clarity.
-    relative_python_exe: str  # cache-relative location of python.exe.
 
 
 _ENTRY_POINT_SIDE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
@@ -125,10 +123,6 @@ def build(config: BuildConfig) -> int:
 def _validate_config(config: BuildConfig) -> None:
     if (config.entry_point is None) == (config.console_script is None):
         raise InternalError("BuildConfig must have exactly one of entry_point or console_script")
-    if config.bundle_python and not config.windows_exe:
-        # D21 / invariant I13: enforced by the CLI as a usage error; raised here
-        # for direct BuildConfig callers (tests, future programmatic API).
-        raise InternalError("BuildConfig.bundle_python requires windows_exe=True")
 
 
 def _select_target(workspace_obj: workspace.Workspace | None, config: BuildConfig) -> _Target:
@@ -188,6 +182,9 @@ def _preflight_output(config: BuildConfig) -> None:
         raise OutputNotWritableError(f"output parent directory does not exist: {parent}")
     if not os.access(parent, os.W_OK):
         raise OutputNotWritableError(f"output parent directory not writable: {parent}")
+    if config.bundle_python:
+        _preflight_bundle_dir(output_path, config.force)
+        return
     if output_path.exists() or output_path.is_symlink():
         if not output_path.is_file():
             raise OutputNotWritableError(f"output path is not a regular file: {output_path}")
@@ -195,6 +192,35 @@ def _preflight_output(config: BuildConfig) -> None:
             raise OutputExistsError(
                 f"output already exists; pass --force to overwrite: {output_path}"
             )
+
+
+def _preflight_bundle_dir(output_path: Path, force: bool) -> None:
+    """D21g: a folder target may be overwritten only when it looks like a
+    previous moonlit bundle. Any other existing path at -o is refused, even
+    under --force, so the flag cannot turn into an ``rm -rf``.
+    """
+    if not (output_path.exists() or output_path.is_symlink()):
+        return
+    if not output_path.is_dir() or output_path.is_symlink():
+        raise OutputNotWritableError(f"output path is not a directory: {output_path}")
+    if not _is_moonlit_bundle_dir(output_path):
+        raise OutputNotWritableError(
+            f"output path is a directory but not a moonlit bundle: {output_path}"
+        )
+    if not force:
+        raise OutputExistsError(f"output already exists; pass --force to overwrite: {output_path}")
+
+
+def _is_moonlit_bundle_dir(path: Path) -> bool:
+    """A directory is a recognized moonlit bundle iff it contains
+    ``<basename>.exe``, ``<basename>.pyz``, and ``_python/python.exe`` (D21g).
+    """
+    basename = path.name
+    return (
+        (path / f"{basename}.exe").is_file()
+        and (path / f"{basename}.pyz").is_file()
+        and (path / "_python" / "python.exe").is_file()
+    )
 
 
 def _run_pipeline(
@@ -288,15 +314,19 @@ def _run_pipeline(
     # so the app's cache key cannot drift on a uv-shipped CPython patch bump.
     bundled = _install_bundled_python(config, tmp_root) if config.bundle_python else None
 
-    env_dict = _build_env_dict(target, build_id, entry_point, config, bundled)
+    env_dict = _build_env_dict(target, build_id, entry_point, config)
 
     with Step("writing archive", verbosity=verbosity) as step:
-        entry_count = _write_archive_atomically(config, staging, env_dict, bundled)
-        # D19d: skip the POSIX exec-bit chmod for windows_exe mode — a `.exe`
-        # doesn't need it, and the file is normally written to a Windows-style
-        # filesystem anyway.
-        if os.name != "nt" and not config.windows_exe:
-            os.chmod(config.output_path, 0o755)
+        if config.bundle_python:
+            assert bundled is not None  # narrow for type checker; gated by config.bundle_python
+            entry_count = _write_bundle_atomically(config, staging, env_dict, bundled)
+        else:
+            entry_count = _write_archive_atomically(config, staging, env_dict)
+            # D19d: skip the POSIX exec-bit chmod for windows_exe mode — a
+            # `.exe` doesn't need it, and the file is normally written to a
+            # Windows-style filesystem anyway.
+            if os.name != "nt" and not config.windows_exe:
+                os.chmod(config.output_path, 0o755)
         total_elapsed = time.perf_counter() - total_start
         step.set_result(
             f"wrote {config.output_path.name} · {_format_duration(total_elapsed)} total",
@@ -391,7 +421,8 @@ def _resolve_entry_point(config: BuildConfig, site_packages: Path) -> str:
 
 def _install_bundled_python(config: BuildConfig, tmp_root: Path) -> _BundledPython:
     """Run step 8.5 (D21): install Python into the build tempdir, locate
-    ``python.exe`` at its dist root, compute the cross-language fingerprint.
+    ``python.exe`` at its dist root. The dist tree is copied verbatim into the
+    output folder's ``_python/`` subdirectory at archive-assembly time.
     """
     install_dir = tmp_root / "python"
     install_dir.mkdir(parents=True, exist_ok=True)
@@ -400,13 +431,7 @@ def _install_bundled_python(config: BuildConfig, tmp_root: Path) -> _BundledPyth
     python_exe = dist_root / "python.exe"
     if not python_exe.is_file():
         raise PythonBundleError(f"python.exe not found in bundled distribution: {python_exe}")
-    fingerprint = hashing.compute_python_fingerprint(dist_root)
-    return _BundledPython(
-        dist_root=dist_root,
-        fingerprint=fingerprint,
-        arcname_prefix="_python/",
-        relative_python_exe="python.exe",
-    )
+    return _BundledPython(dist_root=dist_root)
 
 
 def _build_env_dict(
@@ -414,9 +439,11 @@ def _build_env_dict(
     build_id: str,
     entry_point: str,
     config: BuildConfig,
-    bundled: _BundledPython | None,
 ) -> dict:
-    env: dict = {
+    # Note (D21h): env.json is byte-identical between bundle and non-bundle
+    # builds (modulo built_at). The bundle's "ships its own Python" state is
+    # observable from the on-disk folder layout, not from env.json.
+    return {
         "schema_version": 1,
         "name": target.name,
         "build_id": build_id,
@@ -432,27 +459,28 @@ def _build_env_dict(
             config.python_version or f"{sys.version_info.major}.{sys.version_info.minor}"
         ),
     }
-    if bundled is not None:
-        # spec 05 §3.9: optional additive field; no schema_version bump.
-        env["bundled_python"] = {
-            "prefix": bundled.arcname_prefix,
-            "relative_python_exe": bundled.relative_python_exe,
-            "fingerprint": bundled.fingerprint,
-        }
-    return env
 
 
 def _write_archive_atomically(
     config: BuildConfig,
     staging: Path,
     env_dict: dict,
-    bundled: _BundledPython | None = None,
 ) -> int:
-    """Write the archive via a temp-then-rename dance (D15). Returns entry count."""
+    """Write a single-file archive via a temp-then-rename dance (D15).
+
+    Used for the default ``.pyz`` and ``--windows-exe`` shapes; the bundle
+    shape goes through :func:`_write_bundle_atomically` instead.
+    """
     output_path = config.output_path.resolve(strict=False)
     tmp_out = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
     try:
-        entry_count = _create_archive(tmp_out, staging, env_dict, config, bundled)
+        entry_count = _create_archive(
+            tmp_out,
+            staging,
+            env_dict,
+            prepend_launcher=config.windows_exe,
+            python_shebang=config.python_shebang,
+        )
         os.replace(tmp_out, output_path)
         return entry_count
     finally:
@@ -464,21 +492,78 @@ def _write_archive_atomically(
                 pass
 
 
+def _write_bundle_atomically(
+    config: BuildConfig,
+    staging: Path,
+    env_dict: dict,
+    bundled: _BundledPython,
+) -> int:
+    """Write a folder bundle via the D4 directory-replace protocol (D21f).
+
+    The staging dir at ``<output>.tmp.<pid>/`` is populated with the launcher,
+    the application zipapp, and the bundled Python tree; on success it is
+    swapped into place at ``output_path``. Any prior moonlit-recognized bundle
+    at ``output_path`` is renamed aside before the swap and removed after.
+    Returns the zip-entry count of the inner ``<basename>.pyz``.
+    """
+    output_path = config.output_path.resolve(strict=False)
+    basename = output_path.name
+    tmp_dir = output_path.with_name(f"{output_path.name}.tmp.{os.getpid()}")
+    try:
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir)
+        tmp_dir.mkdir(parents=True)
+
+        # 1. The application zipapp goes inside the folder. Its zip body is
+        #    byte-identical (entry-wise) to what a non-bundle build would
+        #    produce given the same inputs (invariant I11b). We deliberately do
+        #    NOT prepend the launcher PE: in folder mode the launcher is a
+        #    sibling .exe, not a prefix.
+        inner_pyz = tmp_dir / f"{basename}.pyz"
+        entry_count = _create_archive(
+            inner_pyz,
+            staging,
+            env_dict,
+            prepend_launcher=False,
+            python_shebang=config.python_shebang,
+        )
+
+        # 2. The launcher .exe sits next to the .pyz. Just the vendored bytes
+        #    for the host arch — no appended zip, no shebang line.
+        launcher_path = tmp_dir / f"{basename}.exe"
+        launcher_path.write_bytes(_load_launcher_bytes())
+
+        # 3. Copy the python-build-standalone tree into _python/.
+        _copy_python_tree(bundled.dist_root, tmp_dir / "_python")
+
+        # 4. Swap the staged directory into place via D4.
+        _atomic_replace_dir(tmp_dir, output_path)
+        return entry_count
+    finally:
+        # D21f: if the staging dir survived to this point, the swap didn't
+        # happen — clean it up so a crashed build never leaves a half-written
+        # bundle alongside the target.
+        if tmp_dir.exists():
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 def _create_archive(
     tmp_out: Path,
     staging: Path,
     env_dict: dict,
-    config: BuildConfig,
-    bundled: _BundledPython | None = None,
+    *,
+    prepend_launcher: bool,
+    python_shebang: str,
 ) -> int:
-    """Write the archive per spec 02 §3 step 9. Returns total zip-entry count.
+    """Write the zip body (spec 02 §3 step 9-single / 9-bundle.3). Returns
+    total zip-entry count.
 
-    Output shape dispatches on ``config.windows_exe`` (D19): default mode
-    writes ``<shebang line><zip body>``; windows-exe mode writes
-    ``<launcher PE bytes><shebang line><zip body>``. The non-bundled zip body
-    is byte-identical between modes (invariant I11). When ``bundled`` is set
-    (D21), the additional ``_python/*`` entries are interleaved between
-    ``__main__.py`` and ``env.json`` (invariant I11b).
+    Body layout (invariant I11/I11b):
+      site-packages/ → _bootstrap/ → __main__.py → env.json
+
+    When ``prepend_launcher`` is True (single-file ``--windows-exe`` mode), the
+    file starts with the vendored launcher PE bytes; in all modes the shebang
+    line follows the (optional) launcher and precedes the zip header.
     """
     site_packages = staging / "site-packages"
     env_payload = _serialize_env_json(env_dict)
@@ -487,58 +572,60 @@ def _create_archive(
 
     entry_count = 0
     with open(tmp_out, "wb") as fp:
-        # Step 9.3: prefix bytes BEFORE the zip header.
-        if config.windows_exe:
+        if prepend_launcher:
             fp.write(_load_launcher_bytes())
-        fp.write(b"#!" + config.python_shebang.encode("ascii") + b"\n")
+        fp.write(b"#!" + python_shebang.encode("ascii") + b"\n")
         with zipfile.ZipFile(fp, "w", zipfile.ZIP_DEFLATED) as zf:
-            # Step 9.5: site-packages tree.
             for src_file, arcname, mode in _iter_staging_files(site_packages):
                 _write_file_to_zip(zf, src_file, arcname, mode)
                 entry_count += 1
-            # Step 9.6: _bootstrap package (stdlib-only by D7).
             for rel, content in bootstrap_files:
                 zf.writestr(f"_bootstrap/{rel}", content)
                 entry_count += 1
-            # Step 9.7: rendered __main__.py.
             zf.writestr("__main__.py", main_py_bytes)
             entry_count += 1
-            # Step 9.8 (D21): bundled Python tree. Sorted on UTF-8 bytes so
-            # the launcher's central-directory walk derives the same per-entry
-            # order when recomputing the fingerprint.
-            if bundled is not None:
-                for src_file, arcname in _iter_bundled_python_files(
-                    bundled.dist_root, bundled.arcname_prefix
-                ):
-                    with open(src_file, "rb") as f:
-                        zf.writestr(arcname, f.read())
-                    entry_count += 1
-            # Step 9.9: env.json (last so readers find it without scanning past
-            # the large _python/ segment when seeking from the central
-            # directory backwards).
             zf.writestr("env.json", env_payload)
             entry_count += 1
-        # Step 9.10: flush + fsync + close.
         fp.flush()
         os.fsync(fp.fileno())
     return entry_count
 
 
-def _iter_bundled_python_files(dist_root: Path, arcname_prefix: str) -> Iterator[tuple[Path, str]]:
-    """Yield (source_path, arcname) for each file under dist_root, in the same
-    lexicographic-on-UTF-8-bytes order the launcher uses to recompute the
-    fingerprint (spec 02 §4a).
+def _copy_python_tree(dist_root: Path, dest_root: Path) -> None:
+    """Copy every file under ``dist_root`` to the matching path under
+    ``dest_root``. Used by 9-bundle.5 to populate ``<output>/_python/``.
     """
-    pairs: list[tuple[bytes, Path, str]] = []
     for src in dist_root.rglob("*"):
-        if not src.is_file():
+        if src.is_dir():
             continue
-        rel = src.relative_to(dist_root).as_posix()
-        arcname = arcname_prefix + rel
-        pairs.append((arcname.encode("utf-8"), src, arcname))
-    pairs.sort(key=lambda t: t[0])
-    for _, src, arcname in pairs:
-        yield src, arcname
+        rel = src.relative_to(dist_root)
+        dst = dest_root / rel
+        dst.parent.mkdir(parents=True, exist_ok=True)
+        # copy2 preserves mtime + mode; on Windows the mode bits are mostly
+        # ignored but on POSIX-host cross-builds we want python.exe to keep
+        # any executable bits the standalone build shipped with.
+        shutil.copy2(src, dst)
+
+
+def _atomic_replace_dir(src: Path, dst: Path) -> None:
+    """D4: directory-replace via rename-aside, then rename-in.
+
+    ``src`` becomes ``dst``. If ``dst`` already exists, it is moved aside to
+    ``<dst>.old.<pid>`` first; on success we best-effort remove the old copy.
+    On any failure during the swap we roll the old copy back.
+    """
+    old_path: Path | None = None
+    if dst.exists():
+        old_path = dst.with_name(f"{dst.name}.old.{os.getpid()}")
+        os.rename(dst, old_path)
+    try:
+        os.replace(src, dst)
+    except Exception:
+        if old_path is not None and old_path.exists() and not dst.exists():
+            os.rename(old_path, dst)
+        raise
+    if old_path is not None:
+        shutil.rmtree(old_path, ignore_errors=True)
 
 
 def _iter_staging_files(
@@ -653,9 +740,28 @@ def _detect_launcher_arch() -> str:
 
 
 def _print_success_line(output_path: Path, entry_count: int) -> None:
-    """spec 01 §8: ``wrote <path> (<size>, <N> entries)`` to stdout."""
+    """spec 01 §8: ``wrote <path> (<size>, <N> entries)`` to stdout.
+
+    For a folder bundle (D21), <size> is the sum of every file's size under
+    the output dir and <N> is the count of files in the bundle. The literal
+    format is preserved so invariant I8's parser still passes.
+    """
+    if output_path.is_dir():
+        size, count = _bundle_dir_totals(output_path)
+        print(f"wrote {output_path} ({humanize_bytes(size)}, {count} entries)")
+        return
     size = output_path.stat().st_size
     print(f"wrote {output_path} ({humanize_bytes(size)}, {entry_count} entries)")
+
+
+def _bundle_dir_totals(root: Path) -> tuple[int, int]:
+    total_size = 0
+    file_count = 0
+    for p in root.rglob("*"):
+        if p.is_file():
+            total_size += p.stat().st_size
+            file_count += 1
+    return total_size, file_count
 
 
 def humanize_bytes(n: int) -> str:

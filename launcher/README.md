@@ -1,30 +1,20 @@
 # moonlit-launcher
 
-Native Windows launcher prepended to moonlit zipapps when built with
-`moonlit build --windows-exe`. The launcher locates the running `.exe` on
-disk, parses the PE section table to find the trailing data, reads a `#!`
-shebang line, and runs `python.exe ... <self_path> ...` so Python executes
-the trailing zip body as a zipapp.
+Native Windows launcher used by two `moonlit build` modes:
 
-This crate produces one binary, `t.exe` ("terminal" / console launcher).
-The Python side (`src/moonlit/_launchers/`) vendors three pre-built copies
-named by architecture: `t-x86.exe`, `t-x64.exe`, `t-arm64.exe`. The MVP
-ships console-only — windowed (`w.exe`) variants are planned for later.
+1. **`--windows-exe`** (single-file): the launcher PE is prepended to a `#!shebang\n` line and a zip body; at runtime it walks the PE section table, reads the shebang, and runs `python.exe ... <self_path> ...` so Python executes the trailing zip as a zipapp.
+2. **`--bundle-python`** (folder bundle): the launcher PE sits in a folder alongside `<basename>.pyz` and `_python\python.exe`; at runtime it probes for those siblings and, if both exist, spawns the bundled interpreter directly. No on-disk extraction, no fingerprint, no AV-tripping heuristics.
+
+This crate produces one binary, `t.exe` ("terminal" / console launcher). The Python side (`src/moonlit/_launchers/`) vendors three pre-built copies named by architecture: `t-x86.exe`, `t-x64.exe`, `t-arm64.exe`. The MVP ships console-only — windowed (`w.exe`) variants are planned for later.
 
 ## Build
 
-The launcher targets Windows. Two ABIs work; pick the one whose toolchain
-you already have:
+The launcher targets Windows. Two ABIs work; pick the one whose toolchain you already have:
 
-- **MSVC (`*-pc-windows-msvc`)** — needs Visual Studio Build Tools with the
-  "Desktop development with C++" workload (~2 GB). Smaller binaries.
-- **GNU (`*-pc-windows-gnu`)** — `rustup` bundles MinGW with this toolchain,
-  so installation is self-contained inside `rustup`. Slightly larger binaries
-  (~250 KiB vs ~20 KiB for MSVC).
+- **MSVC (`*-pc-windows-msvc`)** — needs Visual Studio Build Tools with the "Desktop development with C++" workload (~2 GB). Smaller binaries.
+- **GNU (`*-pc-windows-gnu`)** — `rustup` bundles MinGW with this toolchain, so installation is self-contained inside `rustup`. Slightly larger binaries.
 
-The vendored binaries currently in `src/moonlit/_launchers/` were built with
-the **GNU** toolchain. The CI workflow (planned) will switch to MSVC once a
-Windows runner with VS Build Tools is configured.
+The vendored binaries currently in `src/moonlit/_launchers/` were built with the **GNU** toolchain. A CI workflow (planned) will switch to MSVC once a Windows runner with VS Build Tools is configured.
 
 ```powershell
 # GNU (recommended for setup-from-scratch)
@@ -44,8 +34,7 @@ cargo build --release --target aarch64-pc-windows-msvc
 
 ## Refresh the vendored binaries
 
-After any source change in `launcher/`, regenerate the artifacts under
-`src/moonlit/_launchers/`:
+After any source change in `launcher/`, regenerate the artifacts under `src/moonlit/_launchers/`:
 
 ```powershell
 $root = (Resolve-Path ..).Path
@@ -60,9 +49,7 @@ cargo +stable-x86_64-pc-windows-gnu build --release --target x86_64-pc-windows-g
 Copy-Launcher x86_64-pc-windows-gnu x64
 ```
 
-CI (`.github/workflows/launchers.yml`, planned) will assert that the committed
-binaries match a fresh `cargo build --release` of the current `launcher/`
-revision.
+CI (`.github/workflows/launchers.yml`, planned) will assert that the committed binaries match a fresh `cargo build --release` of the current `launcher/` revision.
 
 ## End-to-end smoke
 
@@ -70,8 +57,7 @@ revision.
 python tests\smoke_e2e.py
 ```
 
-Hand-builds a tiny fake zipapp, prepends the vendored launcher, runs the
-produced `.exe`, and asserts argv forwarding + exit-code forwarding.
+Hand-builds a tiny fake zipapp, prepends the vendored launcher, runs the produced `.exe`, and asserts argv forwarding + exit-code forwarding.
 
 ## Tests
 
@@ -79,12 +65,21 @@ produced `.exe`, and asserts argv forwarding + exit-code forwarding.
 cargo test --target x86_64-pc-windows-msvc
 ```
 
-The unit tests exercise the PE-end parser, the shebang tokenizer, and the
-Win32 command-line quoting rules without needing to launch a real process.
+The unit tests exercise the PE-end parser, the shebang tokenizer, the Win32 command-line quoting rules, and the folder-bundle sibling probe — all without needing to launch a real process.
 
-## Format on disk
+## Dispatch order at runtime
 
-A produced `.exe` looks like:
+`run()` in `src/main.rs` tries two paths, in order:
+
+1. **Folder-bundle probe (D22a)**. Compute `self_dir = parent(self_path)` and `stem = file_stem(self_path)`. If `self_dir\_python\python.exe` exists AND `self_dir\<stem>.pyz` exists, `CreateProcessW("self_dir\_python\python.exe -I self_dir\<stem>.pyz <forwarded args>")` and forward the exit code. The parent's environment is inherited as-is — no env-block manipulation.
+
+2. **PE-end + shebang fallback**. If the probe finds nothing, the launcher must be a single-file `--windows-exe` artifact: open `self_path`, walk the PE section table to find `pe_end`, read the `#!...` line that follows, tokenize it, and `CreateProcessW(<interp> <args>... <self_path> <our_args>...)`. Python's zipimport reads the trailing zip from `self_path` regardless of leading bytes.
+
+The two paths share `build_cmdline_w` and the same wait/exit-code semantics.
+
+## On-disk shapes
+
+**Single-file (`--windows-exe`)**:
 
 ```
 +------------------+--------------+-------------------+----------------------+
@@ -96,45 +91,21 @@ A produced `.exe` looks like:
                                                        at the end of the file.
 ```
 
-Compatible with distlib's launcher format: an .exe produced by either
-implementation is interchangeable. We re-implement the algorithm rather than
-vendor distlib's launcher so that the binary, license, and source all live
-in the same repository.
+Compatible with distlib's launcher format: an .exe produced by either implementation is interchangeable.
 
-## Bundled Python (`--bundle-python`, D21/D22)
+**Folder bundle (`--bundle-python`)**:
 
-When `moonlit build --windows-exe --bundle-python` is used, the trailing
-zip carries an extra `_python/` subtree containing a python-build-standalone
-CPython distribution (one `python.exe` at the root plus `Lib/`, `DLLs/`,
-`python3XX.dll`, etc.). The on-disk byte layout is unchanged — the entries
-just live alongside `site-packages/`, `_bootstrap/`, `__main__.py`, and
-`env.json` inside the zip body.
+```
+<output>\
+├── <basename>.exe        ← this binary, no appended zip
+├── <basename>.pyz        ← the application zipapp (same body as a non-bundle build)
+└── _python\
+    ├── python.exe        ← the bundled CPython interpreter (python-build-standalone)
+    ├── python3XX.dll
+    └── Lib\…
+```
 
-At run time, the launcher scans the trailing zip's central directory before
-anything else. If it finds at least one entry whose filename starts with
-`_python/`, it switches to the **bundled** path:
-
-1. Compute a SHA-256 **fingerprint** over the sorted `(arcname, crc32_le)`
-   pairs of every `_python/*` entry. Producer-side this is
-   `hashing.compute_python_fingerprint` in
-   `src/moonlit/hashing.py`; the two implementations MUST agree byte-for-byte
-   (cross-language contract pinned in `specs/02-build-pipeline.md` §4a).
-2. Look up `%LOCALAPPDATA%\moonlit\python\<fingerprint>\`. Fast path: if
-   `python.exe` is already there, skip the extract.
-3. Slow path: acquire `LockFileEx` on `<fingerprint>.lock` (mirrors the
-   `_bootstrap/locking.py` D13 parameters), re-check the cache, then
-   inflate every entry to a `<fingerprint>.tmp.<pid>\` sibling and
-   `MoveFileExW` it into place atomically.
-4. Spawn `<cache>\python.exe -I <self_path> <forwarded args>` with
-   `MOONLIT_BUNDLED_PYTHON=<fingerprint>` set in the child environment. The
-   `-I` flag isolates the child from any host-Python env / user-site leaks;
-   the env var lets the moonlit bootstrap know it's running under the
-   launcher-dispatched interpreter and skip the python-version mismatch
-   check.
-
-The launcher implements its own central-directory walker (no `zip` crate)
-and uses only two added deps: `miniz_oxide` for deflate and `sha2` for
-SHA-256. Cargo.toml is the source of truth for these.
+This shape avoids the runtime-extraction pattern that triggered `Trojan:Win32/Wacatac.B!ml` detections in v0.3.0 — nothing is decompressed at runtime, the launcher is just a process shim.
 
 ## License
 
