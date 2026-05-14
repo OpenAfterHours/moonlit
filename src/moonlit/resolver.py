@@ -198,10 +198,14 @@ def python_install(
         raise PythonBundleError(f"uv python install failed: {stderr}")
 
     # uv may leave sibling state dirs such as `.temp/` (transactional scratch)
-    # alongside the distribution. Filter them out: python-build-standalone
-    # distributions never start with `.`.
+    # and, since the minor-version-alias change, a `cpython-X.Y/` symlink/dir
+    # pointing at the patch install. A full distribution directory is named
+    # `<impl>-X.Y.Z-<platform>-<arch>-<variant>`; matching the patch-version +
+    # platform suffix discriminates it from the alias.
     children = [
-        p for p in sorted(install_dir.iterdir()) if p.is_dir() and not p.name.startswith(".")
+        p
+        for p in sorted(install_dir.iterdir())
+        if p.is_dir() and not p.name.startswith(".") and _DIST_DIR_RE.match(p.name)
     ]
     if len(children) != 1:
         names = ", ".join(c.name for c in children) or "<none>"
@@ -209,6 +213,9 @@ def python_install(
             f"expected exactly one python distribution under {install_dir}; got: {names}"
         )
     return children[0]
+
+
+_DIST_DIR_RE = re.compile(r"^[^-]+-\d+\.\d+\.\d+-.+$")
 
 
 # ---------- internal subprocess wrapper ----------
