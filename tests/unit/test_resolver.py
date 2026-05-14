@@ -485,6 +485,36 @@ def test_python_install_ignores_dotfile_sibling_dirs(fake_run: _FakeRun, tmp_pat
     assert resolver.python_install(install_dir, version="3.13") == dist
 
 
+def test_python_install_ignores_minor_version_alias_dir(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    """Newer uv versions (post python-install-aliases) emit two siblings under
+    ``--install-dir``: the full distribution directory
+    ``cpython-3.14.3-windows-x86_64-none/`` AND a minor-version alias
+    ``cpython-3.14/`` that points at the patch above. Only the full
+    distribution name encodes a complete X.Y.Z plus platform suffix; discovery
+    must ignore the alias rather than raising ``PythonBundleError``."""
+    install_dir = tmp_path / "py"
+    install_dir.mkdir()
+    (install_dir / "cpython-3.14").mkdir()
+    dist = install_dir / "cpython-3.14.3-windows-x86_64-none"
+    dist.mkdir()
+    assert resolver.python_install(install_dir, version="3.14") == dist
+
+
+def test_python_install_two_full_distributions_still_raises(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    """Filtering aliases must NOT mask the genuine ambiguity case where uv
+    somehow left two distinct full distributions side by side."""
+    install_dir = tmp_path / "py"
+    install_dir.mkdir()
+    (install_dir / "cpython-3.14.3-windows-x86_64-none").mkdir()
+    (install_dir / "cpython-3.14.2-windows-x86_64-none").mkdir()
+    with pytest.raises(PythonBundleError, match="distribution"):
+        resolver.python_install(install_dir, version="3.14")
+
+
 def test_python_install_verbose_echoes_argv(
     fake_run: _FakeRun, tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:

@@ -311,7 +311,7 @@ uv python install --install-dir <staging>/python --no-bin --no-registry <version
 
 - `<version>` is `BuildConfig.python_version` (e.g. `"3.13"`) when set, else `f"{sys.version_info.major}.{sys.version_info.minor}"` — same fallback as `env.json.python_version` (D20c).
 - `--no-bin` skips installing executables under the bin directory; `--no-registry` (Windows-only, harmless elsewhere) skips Windows-registry registration.
-- uv emits exactly one distribution directory under `--install-dir`, named like `cpython-3.13.X-windows-x64-none/`. The resolver discovers it by listing the install dir; the patch version is never hardcoded. Anything other than exactly one child dir → `PythonBundleError`.
+- uv emits exactly one full distribution directory under `--install-dir`, named like `cpython-3.13.X-windows-x64-none/`. Recent uv versions additionally place a minor-version alias dir (e.g. `cpython-3.14/`) alongside it pointing at the latest installed patch; the resolver filters by full-distribution name pattern (`<impl>-X.Y.Z-<platform>-…`), ignoring both dotfile state dirs and minor-version aliases. The patch version is never hardcoded. Anything other than exactly one matching child dir → `PythonBundleError`.
 
 **D21d — Error class and exit code.** `PythonBundleError(MoonlitError, exit_code=13)` covers (a) non-zero exit from `uv python install`, (b) the discovery rule above, and (c) any I/O failure when assembling the output folder. Falls back to exit 3 (`UvNotFoundError`) when `uv` itself is missing from PATH.
 
