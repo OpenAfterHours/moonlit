@@ -73,15 +73,24 @@ For `--windows-exe` builds, combining `--python-version <X.Y>` with the default 
 
 Multi-version-in-one-artifact (one `.pyz` that runs on multiple Pythons) is **not** supported; build one artifact per target version.
 
-### Bundling Python in the `.exe` (Windows)
+### Bundling Python in a folder (Windows)
 
-If your recipients don't have Python installed at all, add `--bundle-python` to a `--windows-exe` build. moonlit asks `uv python install` for the matching CPython (python-build-standalone), packs it into the `.exe` under `_python/`, and the prepended launcher unpacks it on first run to `%LOCALAPPDATA%\moonlit\python\<fingerprint>\` before dispatching it:
+If your recipients don't have Python installed at all, add `--bundle-python`. moonlit asks `uv python install` for the matching CPython (python-build-standalone) and produces a **folder bundle** containing a thin launcher `.exe`, the application zipapp, and the managed CPython tree side-by-side. With `--bundle-python` set, `-o` names the output **directory** and MUST NOT end in `.exe` or `.pyz`:
 
 ```sh
-uv run moonlit build --windows-exe --bundle-python -e myapp:main -o myapp.exe
+uv run moonlit build --bundle-python -e myapp:main -o dist/myapp
 ```
 
-The produced `.exe` weighs ~30 MiB more than its non-bundled sibling (the embedded CPython) but runs on a Python-free Windows box. The bundled interpreter is launched with `-I` (isolated mode) so nothing on the recipient's `PATH` or user-site can bleed in. Phase 1 is Windows-only; POSIX bundles are out of scope.
+The bundle layout:
+
+```
+dist/myapp/
+├── myapp.exe       # thin launcher (runs ./_python/python.exe ./myapp.pyz)
+├── myapp.pyz       # the application zipapp
+└── _python/        # bundled CPython tree (~30 MiB)
+```
+
+Distribute the folder (typically zipped) and run `myapp\myapp.exe`. The launcher spawns the sibling `_python\python.exe` directly with `-I` (isolated mode) — nothing is extracted at runtime, so nothing on the recipient's `PATH` or user-site can bleed in. This folder shape replaces the v0.3.0 single-`.exe` `--bundle-python` output, which tripped Windows Defender's ML heuristics for self-extracting archives. `--windows-exe` may be passed alongside `--bundle-python` but is a no-op (the folder always contains a launcher `.exe`). Phase 1 is Windows-only; POSIX bundles are out of scope.
 
 ### Build output
 
@@ -164,7 +173,7 @@ tests/
 | Cross-platform caching (`%LOCALAPPDATA%`, `~/.moonlit`) | done |
 | `MOONLIT_ROOT`, `MOONLIT_FORCE_EXTRACT`, `MOONLIT_ENTRY_POINT`, `MOONLIT_DEBUG` | done |
 | `--windows-exe` native launcher | done |
-| `--bundle-python` (embed CPython in the `.exe`, Windows phase 1) | done |
+| `--bundle-python` (ship CPython next to a launcher `.exe` as a folder bundle, Windows phase 1) | done |
 | Real `flock`/`msvcrt` locking | done |
 | `moonlit info <pyz>` subcommand | done |
 | `--python-version` cross-interpreter builds | done |
