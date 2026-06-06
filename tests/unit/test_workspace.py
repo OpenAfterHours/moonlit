@@ -275,7 +275,7 @@ def test_workspace_is_frozen_dataclass(tmp_path: Path) -> None:
     ws = detect(tmp_path)
     assert ws is not None
     with pytest.raises(AttributeError):
-        setattr(ws, "root", Path("/elsewhere"))
+        ws.root = Path("/elsewhere")
 
 
 def test_overlapping_globs_do_not_create_phantom_duplicates(tmp_path: Path) -> None:
