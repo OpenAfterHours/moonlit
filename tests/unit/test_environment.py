@@ -66,7 +66,7 @@ def test_environment_is_frozen(tmp_path: Path) -> None:
     pyz = make_pyz_with(tmp_path, valid_env())
     env = load(pyz)
     with pytest.raises(AttributeError):
-        env.name = "other"  # type: ignore[misc]
+        setattr(env, "name", "other")
 
 
 def test_unknown_fields_are_ignored_d9(tmp_path: Path) -> None:

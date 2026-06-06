@@ -361,8 +361,8 @@ def test_slow_path_acquires_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     real_acquire = locking.acquire
     acquired: list[Path] = []
 
-    def tracking_acquire(lock_path: object) -> int:
-        acquired.append(Path(str(lock_path)))
+    def tracking_acquire(lock_path: str | Path) -> int:
+        acquired.append(Path(lock_path))
         return real_acquire(lock_path)
 
     monkeypatch.setattr(locking, "acquire", tracking_acquire)
@@ -413,9 +413,7 @@ def test_extract_to_reports_progress_monotonically(
     assert recorded[-1] == 4 + 2 + 6  # final equals total site-packages bytes
 
 
-def test_fast_path_constructs_no_reporter(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
+def test_fast_path_constructs_no_reporter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     cache_root = tmp_path / "cache"
     cache_root.mkdir()
     archive = make_pyz(tmp_path / "app.pyz", {"site-packages/foo.py": b"x\n"})

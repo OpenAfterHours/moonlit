@@ -27,7 +27,7 @@ def _fake_uv_on_path(monkeypatch: pytest.MonkeyPatch) -> None:
     """Default: pretend ``uv`` is on PATH. Tests can override via monkeypatch."""
     real_which = shutil.which
 
-    def fake_which(name: str, *args: object, **kwargs: object) -> str | None:
+    def fake_which(name: str, *args: Any, **kwargs: Any) -> str | None:
         if name == "uv":
             return "/fake/uv"
         return real_which(name, *args, **kwargs)

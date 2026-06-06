@@ -10,6 +10,7 @@ import importlib
 import os
 import site
 from pathlib import Path
+from typing import Any, cast
 
 from .environment import Environment
 from .errors import CollisionError, EntryPointError
@@ -25,7 +26,9 @@ def run(env: Environment, site_dir: Path) -> int:
     entry_point_str = _resolve_entry_point_string(env)
     module_name, attr = _parse_entry_point(entry_point_str)
     obj = _import_and_resolve(module_name, attr)
-    return _coerce_return(obj())
+    # spec §8: invoke the resolved object raw — no callable pre-check. It is
+    # dynamic by nature (a getattr walk), so cast away `object` for the call.
+    return _coerce_return(cast(Any, obj)())
 
 
 # ---------- private helpers, in run()'s call order ----------
@@ -77,7 +80,7 @@ def _coerce_return(result: object) -> int:
     if isinstance(result, int):
         return result & 0xFF
     try:
-        return int(result) & 0xFF
+        return int(cast(Any, result)) & 0xFF
     except (TypeError, ValueError) as exc:
         raise EntryPointError(
             f"entry point returned uncoercible value: {type(result).__name__}"

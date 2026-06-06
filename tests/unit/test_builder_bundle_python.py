@@ -19,6 +19,7 @@ distribution into the tempdir. Asserts:
 
 import json
 import zipfile
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -364,7 +365,7 @@ def test_bundle_refuses_to_overwrite_unrelated_directory_even_with_force(
 
     cfg = _make_bundle_config(project_root, out)
     # Even with force=True, the unrelated dir must not be overwritten.
-    cfg_force = BuildConfig(**{**cfg.__dict__, "force": True})
+    cfg_force = replace(cfg, force=True)
     with pytest.raises(OutputNotWritableError, match="not a moonlit bundle"):
         build(cfg_force)
     assert (out / "important_user_file.txt").is_file()
@@ -380,7 +381,7 @@ def test_bundle_refuses_existing_regular_file_at_output_path(
     out = tmp_path / "out" / "app"
     out.parent.mkdir(parents=True)
     out.write_text("i'm a file, not a folder", encoding="utf-8")
-    cfg = BuildConfig(**{**_make_bundle_config(project_root, out).__dict__, "force": True})
+    cfg = replace(_make_bundle_config(project_root, out), force=True)
     with pytest.raises(OutputNotWritableError, match="not a directory"):
         build(cfg)
 
@@ -393,7 +394,7 @@ def test_bundle_overwrites_moonlit_bundle_dir_with_force(
     assert (bundle_path / f"{bundle_path.name}.exe").is_file()
 
     # Second build with --force should atomically replace the bundle.
-    cfg = BuildConfig(**{**_make_bundle_config(project_root, bundle_path).__dict__, "force": True})
+    cfg = replace(_make_bundle_config(project_root, bundle_path), force=True)
     build(cfg)
     assert (bundle_path / f"{bundle_path.name}.exe").is_file()
     assert (bundle_path / "_python" / "python.exe").is_file()

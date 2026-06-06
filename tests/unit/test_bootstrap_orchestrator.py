@@ -10,6 +10,7 @@ import json
 import os
 import sys
 import zipfile
+from collections.abc import Iterator
 from pathlib import Path
 from typing import Any
 
@@ -22,7 +23,7 @@ from moonlit._bootstrap.environment import resolve_cache_root as _resolve_cache_
 
 
 @pytest.fixture(autouse=True)
-def _isolate_sys_state() -> None:
+def _isolate_sys_state() -> Iterator[None]:
     saved_path = sys.path[:]
     saved_modules = set(sys.modules.keys())
     try:

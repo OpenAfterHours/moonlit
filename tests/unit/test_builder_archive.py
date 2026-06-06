@@ -104,7 +104,7 @@ def fake_resolver(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
 
 
 def make_config(project_root: Path, output_path: Path, **overrides: Any) -> BuildConfig:
-    defaults = dict(
+    defaults: dict[str, Any] = dict(
         project_root=project_root,
         output_path=output_path,
         entry_point="myapp.cli:main",
