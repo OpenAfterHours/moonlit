@@ -16,6 +16,7 @@ import zipfile
 from pathlib import Path
 from time import sleep
 
+from . import progress
 from .environment import Environment
 from .errors import ExtractionError
 from .locking import lock
@@ -50,8 +51,12 @@ def materialize(
             return site_dir
 
         tmp_dir = cache_root / f".{cache_key}.tmp.{os.getpid()}"
+        reporter = progress.ExtractProgress(
+            f"unpacking {env.name}", _total_extract_bytes(archive_path)
+        )
         try:
-            _extract_to(archive_path, tmp_dir)
+            with reporter:
+                _extract_to(archive_path, tmp_dir, reporter)
             atomic_replace_dir(tmp_dir, site_parent, os.getpid())
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
@@ -98,12 +103,32 @@ def _force_extract() -> bool:
     return bool(os.environ.get("MOONLIT_FORCE_EXTRACT", ""))
 
 
-def _extract_to(archive_path: str | Path, tmp_dir: Path) -> None:
+def _total_extract_bytes(archive_path: str | Path) -> int:
+    """Sum the uncompressed bytes of the ``site-packages/`` files (D1).
+
+    Drives the progress percentage; matches what ``_extract_to`` will write.
+    Directory markers and non-prefixed entries (``_bootstrap/``, env.json)
+    contribute nothing.
+    """
+    with zipfile.ZipFile(archive_path, "r") as zf:
+        return sum(
+            info.file_size
+            for info in zf.infolist()
+            if info.filename.startswith("site-packages/") and not info.is_dir()
+        )
+
+
+def _extract_to(
+    archive_path: str | Path,
+    tmp_dir: Path,
+    reporter: progress.ExtractProgress,
+) -> None:
     if tmp_dir.exists():
         shutil.rmtree(tmp_dir, ignore_errors=True)
     tmp_site_packages = tmp_dir / "site-packages"
     tmp_site_packages.mkdir(parents=True, exist_ok=False)
 
+    bytes_done = 0
     with zipfile.ZipFile(archive_path, "r") as zf:
         for info in zf.infolist():
             arcname = info.filename
@@ -116,6 +141,8 @@ def _extract_to(archive_path: str | Path, tmp_dir: Path) -> None:
             _reject_unsafe_path(arcname, normalized)
             dest = tmp_site_packages / normalized
             _extract_one(zf, info, dest)
+            bytes_done += info.file_size
+            reporter.update(bytes_done)
 
 
 def _reject_unsafe_path(arcname: str, normalized: str) -> None:

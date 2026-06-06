@@ -16,6 +16,7 @@ import textwrap
 import threading
 import time
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -91,8 +92,8 @@ def test_acquire_failure_does_not_leak_fd(tmp_path: Path, monkeypatch: pytest.Mo
         real_open = os.open
         target = str(lock_path)
 
-        def tracking_open(path: object, *args: object, **kwargs: object) -> int:
-            fd = real_open(path, *args, **kwargs)  # type: ignore[arg-type]
+        def tracking_open(path: Any, *args: Any, **kwargs: Any) -> int:
+            fd = real_open(path, *args, **kwargs)
             if str(path) == target:
                 opened_for_lock.append(fd)
             return fd

@@ -96,8 +96,7 @@ def load(archive_path: str | Path) -> Environment:
     """Read env.json from ``archive_path``, validate per D8, return Environment."""
     raw = _read_env_bytes(archive_path)
     text = _decode_utf8(raw)
-    parsed = _parse_json(text)
-    _ensure_dict(parsed)
+    parsed = _ensure_dict(_parse_json(text))
     _check_schema_version(parsed)
     _check_required_fields_present(parsed)
     _check_required_field_types(parsed)
@@ -143,9 +142,10 @@ def _parse_json(text: str) -> object:
         raise EnvJsonError("env.json is not valid JSON") from exc
 
 
-def _ensure_dict(parsed: object) -> None:
+def _ensure_dict(parsed: object) -> dict:
     if not isinstance(parsed, dict):
         raise EnvJsonError("env.json must be a JSON object")
+    return parsed
 
 
 def _check_schema_version(parsed: dict) -> None:

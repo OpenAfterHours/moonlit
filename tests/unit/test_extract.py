@@ -361,8 +361,8 @@ def test_slow_path_acquires_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     real_acquire = locking.acquire
     acquired: list[Path] = []
 
-    def tracking_acquire(lock_path: object) -> int:
-        acquired.append(Path(str(lock_path)))
+    def tracking_acquire(lock_path: str | Path) -> int:
+        acquired.append(Path(lock_path))
         return real_acquire(lock_path)
 
     monkeypatch.setattr(locking, "acquire", tracking_acquire)
@@ -370,3 +370,59 @@ def test_slow_path_acquires_lock(tmp_path: Path, monkeypatch: pytest.MonkeyPatch
     assert len(acquired) == 1
     expected_lock = cache_root / f"myapp_{'a' * 64}.lock"
     assert acquired[0] == expected_lock
+
+
+# ---------- progress reporting (spec 03 §14) ----------
+
+
+def test_total_extract_bytes_sums_only_site_packages(tmp_path: Path) -> None:
+    archive_path = tmp_path / "app.pyz"
+    with zipfile.ZipFile(archive_path, "w") as zf:
+        zf.writestr("site-packages/a.py", b"12345")  # 5 bytes
+        zf.writestr(zipfile.ZipInfo("site-packages/sub/"), b"")  # dir marker, 0
+        zf.writestr("site-packages/sub/b.py", b"678")  # 3 bytes
+        zf.writestr("_bootstrap/x.py", b"ignored")  # not site-packages/
+        zf.writestr("env.json", b"{}")  # not site-packages/
+    assert extract._total_extract_bytes(archive_path) == 8
+
+
+def test_extract_to_reports_progress_monotonically(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    archive = make_pyz(
+        tmp_path / "app.pyz",
+        {
+            "site-packages/a.py": b"1111",
+            "site-packages/b.py": b"22",
+            "site-packages/c.py": b"333333",
+        },
+    )
+
+    recorded: list[int] = []
+
+    class _Recorder(extract.progress.ExtractProgress):
+        def update(self, bytes_done: int) -> None:
+            recorded.append(bytes_done)
+
+    monkeypatch.setattr(extract.progress, "ExtractProgress", _Recorder)
+    extract.materialize(env_with(), cache_root, archive)
+
+    assert recorded == sorted(recorded)  # monotonically non-decreasing
+    assert recorded[-1] == 4 + 2 + 6  # final equals total site-packages bytes
+
+
+def test_fast_path_constructs_no_reporter(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    archive = make_pyz(tmp_path / "app.pyz", {"site-packages/foo.py": b"x\n"})
+    env = env_with()
+    extract.materialize(env, cache_root, archive)  # cold cache → extracts
+
+    def must_not_construct(*_args: object, **_kwargs: object) -> None:
+        raise AssertionError("fast path built a progress reporter; §14 violated")
+
+    monkeypatch.setattr(extract.progress, "ExtractProgress", must_not_construct)
+    site_dir = extract.materialize(env, cache_root, archive)  # cache hit
+    assert site_dir.is_dir()

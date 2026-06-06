@@ -43,6 +43,7 @@ import sys
 import tomllib
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NoReturn
 
 # ------------------------------------------------------------------ constants
 
@@ -348,7 +349,7 @@ def capture(cmd: str) -> str:
     ).stdout
 
 
-def die(msg: str) -> None:
+def die(msg: str) -> NoReturn:
     print(f"error: {msg}", file=sys.stderr)
     sys.exit(1)
 

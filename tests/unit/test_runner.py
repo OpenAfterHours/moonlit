@@ -10,6 +10,7 @@ between tests because runner.run() mutates global interpreter state via
 """
 
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
 import pytest
@@ -22,7 +23,7 @@ from moonlit._bootstrap.runner import run
 
 
 @pytest.fixture(autouse=True)
-def _isolate_sys_state() -> None:
+def _isolate_sys_state() -> Iterator[None]:
     saved_path = sys.path[:]
     saved_modules = set(sys.modules.keys())
     try:
