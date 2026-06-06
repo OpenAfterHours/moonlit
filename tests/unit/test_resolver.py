@@ -485,9 +485,7 @@ def test_python_install_ignores_dotfile_sibling_dirs(fake_run: _FakeRun, tmp_pat
     assert resolver.python_install(install_dir, version="3.13") == dist
 
 
-def test_python_install_ignores_minor_version_alias_dir(
-    fake_run: _FakeRun, tmp_path: Path
-) -> None:
+def test_python_install_ignores_minor_version_alias_dir(fake_run: _FakeRun, tmp_path: Path) -> None:
     """Newer uv versions (post python-install-aliases) emit two siblings under
     ``--install-dir``: the full distribution directory
     ``cpython-3.14.3-windows-x86_64-none/`` AND a minor-version alias
