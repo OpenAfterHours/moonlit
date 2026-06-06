@@ -199,6 +199,22 @@ Bootstrap-internal failures print a single line `moonlit: <message>` to stderr a
 - `os.chmod` calls are best-effort; failures on Windows are ignored.
 - Long paths on Windows: paths exceeding 240 characters are extracted via the `\\?\` prefix on raw `os.open`/`shutil` calls. Documented MVP limitation: paths still subject to filesystem-level limits.
 - `Path.resolve()` on offline UNC drives may hang. Documented limitation; out of scope for MVP recovery.
+- ANSI escape sequences (`\r`, `\x1b[2K`) emitted by the extraction-progress indicator (Section 14) are written unconditionally **when stderr is a TTY**, following the precedent of the build-time `moonlit._progress` reporter. Python 3.13 enables VT processing on modern Windows terminals; no `colorama`-style shim is added (it would also violate the stdlib-only constraint).
+
+## 14. Extraction progress
+
+The slow-path extraction (Section 6) can take seconds for a large bundle. To avoid a frozen-looking terminal, `extract.materialize` drives a transient progress indicator (`moonlit._bootstrap.progress.ExtractProgress`). It is the stdlib-only cousin of the build-time `moonlit._progress` reporter; the two cannot share code because only `_bootstrap/` ships in the `.pyz` and the bootstrap is stdlib-only (D7).
+
+Behavior — designed to preserve the silent-on-success contract of Section 10:
+
+- **stderr only.** User stdout is never touched. (E2E: `test_extraction_is_silent_under_pipe`.)
+- **TTY-gated.** Nothing is written unless `stderr.isatty()`. Pipes, file redirects, and CI logs stay silent.
+- **Delayed start (~200 ms).** The first frame is not painted until extraction has run for ~200 ms, so fast extractions stay completely silent — no flash, no residue.
+- **Transient.** Each frame is `\r`-overwritten in place; on completion (success *or* failure) the line is cleared with `\r\x1b[2K`. No trailing `✓` line is left — unlike the build reporter, which leaves per-step `✓` lines because `moonlit build` is a foreground command the user invoked; here the user is running *their* app, so the bootstrap leaves no chatter.
+- **Format.** `<braille-frame> unpacking <name> <pct>%`, where `<name>` is `env.name` and `<pct>` is the percentage of total uncompressed `site-packages/` bytes written so far. The Braille frame advances once per repaint (throttled to ~80 ms), so a single very large file still animates even though the percentage does not move — a documented limitation of the per-file byte granularity.
+- **Never on the fast path.** A cache hit (Section 6, D14) returns before any reporter is constructed and before the byte pre-scan, so the common warm-cache case incurs neither output nor extra zip work.
+
+No new environment variable gates this. TTY-gating already suppresses every case where the indicator could contaminate logs, and the line is transient, so the D16 env-var contract (Section 9) is unchanged.
 
 ## 12. Stdlib-only constraint
 

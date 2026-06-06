@@ -138,6 +138,20 @@ def test_pyz_runs_user_main_and_prints_output(tmp_path: Path) -> None:
     assert "hello from myapp" in stdout
 
 
+def test_extraction_is_silent_under_pipe(tmp_path: Path) -> None:
+    # Spec 03 §14: the unpacking indicator is TTY-gated. Under a pipe
+    # (subprocess capture), a cold-cache extraction must leave no progress
+    # frames or escape sequences on stderr.
+    pyz = make_test_pyz(
+        tmp_path / "app.pyz",
+        user_modules={"myapp.py": "def main():\n    print('hi')\n    return 0\n"},
+    )
+    code, _, stderr = run_pyz(pyz, env=isolated_env(tmp_path))
+    assert code == 0, stderr
+    assert "\x1b[2K" not in stderr
+    assert not any(frame in stderr for frame in "⠋⠙⠹⠸⠼⠴⠦⠧⠇⠏")
+
+
 def test_user_int_return_becomes_exit_code(tmp_path: Path) -> None:
     pyz = make_test_pyz(
         tmp_path / "app.pyz",
