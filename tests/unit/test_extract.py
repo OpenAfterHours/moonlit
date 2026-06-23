@@ -426,3 +426,120 @@ def test_fast_path_constructs_no_reporter(tmp_path: Path, monkeypatch: pytest.Mo
     monkeypatch.setattr(extract.progress, "ExtractProgress", must_not_construct)
     site_dir = extract.materialize(env, cache_root, archive)  # cache hit
     assert site_dir.is_dir()
+
+
+# ---------- runtime cache self-GC wiring (spec 04 §12.2 / D24) ----------
+
+
+def _env_gc(build_id: str, gc: dict | None) -> Environment:
+    return Environment(
+        schema_version=1,
+        name="myapp",
+        build_id=build_id,
+        entry_point="myapp.cli:main",
+        built_at="2026-05-08T15:23:01Z",
+        moonlit_version="0.1.0",
+        python_shebang="/usr/bin/env python3",
+        gc=gc,
+    )
+
+
+def test_slow_path_invokes_reap_after_install(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    archive = make_pyz(tmp_path / "app.pyz", {"site-packages/foo.py": b"x\n"})
+    env = env_with()
+
+    calls: list[tuple[object, Path]] = []
+    installed_when_called: list[bool] = []
+    site_dir = cache_root / f"myapp_{'a' * 64}" / "site-packages"
+
+    def fake_reap(e: object, root: Path, **_kw: object) -> None:
+        calls.append((e, root))
+        installed_when_called.append(site_dir.is_dir())  # install precedes reap
+
+    monkeypatch.setattr(extract.reap, "reap", fake_reap)
+    extract.materialize(env, cache_root, archive)  # cold → slow path
+    assert len(calls) == 1
+    assert calls[0][0] is env
+    assert calls[0][1] == cache_root
+    assert installed_when_called == [True]
+
+
+def test_fast_path_does_not_invoke_reap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    archive = make_pyz(tmp_path / "app.pyz", {"site-packages/foo.py": b"x\n"})
+    env = env_with()
+    extract.materialize(env, cache_root, archive)  # cold → extracts (slow path)
+
+    def must_not_reap(*_a: object, **_k: object) -> None:
+        raise AssertionError("fast path invoked reap; D24 says slow-path only")
+
+    monkeypatch.setattr(extract.reap, "reap", must_not_reap)
+    site_dir = extract.materialize(env, cache_root, archive)  # warm hit
+    assert site_dir.is_dir()
+
+
+def test_force_extract_invokes_reap(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    archive = make_pyz(tmp_path / "app.pyz", {"site-packages/foo.py": b"x\n"})
+    env = env_with()
+    extract.materialize(env, cache_root, archive)
+
+    calls: list[object] = []
+    monkeypatch.setattr(extract.reap, "reap", lambda *a, **k: calls.append(a))
+    monkeypatch.setenv("MOONLIT_FORCE_EXTRACT", "1")
+    extract.materialize(env, cache_root, archive)  # force → slow path again
+    assert len(calls) == 1
+
+
+def test_reap_failure_does_not_break_materialize(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    archive = make_pyz(tmp_path / "app.pyz", {"site-packages/foo.py": b"x\n"})
+    env = env_with()
+
+    def boom(*_a: object, **_k: object) -> None:
+        raise RuntimeError("reap blew up")
+
+    monkeypatch.setattr(extract.reap, "reap", boom)
+    site_dir = extract.materialize(env, cache_root, archive)
+    assert site_dir.is_dir()
+    assert (site_dir / "foo.py").read_bytes() == b"x\n"
+
+
+def test_new_extraction_reaps_prior_build(tmp_path: Path) -> None:
+    # End-to-end through materialize: extracting a new build reaps the prior one.
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    policy = {"enabled": True, "keep_latest": 1, "grace_seconds": 0}
+
+    archive1 = make_pyz(tmp_path / "v1.pyz", {"site-packages/foo.py": b"v1\n"})
+    site1 = extract.materialize(_env_gc("a" * 64, policy), cache_root, archive1)
+    assert site1.is_dir()
+
+    archive2 = make_pyz(tmp_path / "v2.pyz", {"site-packages/foo.py": b"v2\n"})
+    site2 = extract.materialize(_env_gc("b" * 64, policy), cache_root, archive2)
+
+    assert site2.is_dir()
+    assert (site2 / "foo.py").read_bytes() == b"v2\n"
+    assert not site1.parent.exists(), "the prior build's cache entry should be reaped"
+
+
+def test_disabled_gc_keeps_prior_build(tmp_path: Path) -> None:
+    cache_root = tmp_path / "cache"
+    cache_root.mkdir()
+    policy = {"enabled": False, "keep_latest": 1, "grace_seconds": 0}
+
+    archive1 = make_pyz(tmp_path / "v1.pyz", {"site-packages/foo.py": b"v1\n"})
+    site1 = extract.materialize(_env_gc("a" * 64, policy), cache_root, archive1)
+    archive2 = make_pyz(tmp_path / "v2.pyz", {"site-packages/foo.py": b"v2\n"})
+    extract.materialize(_env_gc("b" * 64, policy), cache_root, archive2)
+
+    assert site1.parent.is_dir(), "GC disabled → prior build retained"

@@ -96,12 +96,16 @@ If you find yourself jumping up the file to understand a downstream function, th
 - **`os.replace()` for atomic rename** — works on both POSIX and Windows since Python 3.3. Don't use `os.rename()` (Windows fails if the target exists).
 - **Locking is OS-managed**: `fcntl.flock(LOCK_EX | LOCK_NB)` on POSIX, `msvcrt.locking(LK_NBLCK, 1)` on Windows, both dispatched from `_bootstrap/locking.py`. The lock file at `<cache_root>/<cache_key>.lock` is opened with `O_CREAT | O_RDWR` (no `O_EXCL`) and persists across releases — closing the fd releases the OS lock; the kernel releases it on process death. Do NOT add `os.unlink(lock_path)` to the release path: it would race a concurrent opener since `flock` is per open file description.
 - **Launcher binaries** under `src/moonlit/_launchers/t-{x86,x64,arm64}.exe` are vendored build artifacts of the `launcher/` Rust crate. Treat them as opaque bytes from Python — never modify in place. To regenerate, edit `launcher/src/main.rs`, `cargo build --release --target <triple>`, and copy the produced `t.exe` over the appropriate `t-<arch>.exe`. See `launcher/README.md` for the full recipe.
+- **Cache is no longer append-only for an app's own keys (D24)**: the bootstrap's `_bootstrap/reap.py` auto-prunes older same-app `<cache_key>` dirs on the slow path (keep newest N, default 2, past a grace, default 24h). It runs only after a fresh extraction, under the held lock, and is best-effort (never raises, never changes the exit code). The just-installed key is never selected (newest mtime + explicit exclusion); cross-app caches and `.tmp`/`.old`/`.lock` orphans are never touched. `reap.py` **mirrors but never imports** `clean.py` (D7); the `_parse_cache_key` parity is pinned by `tests/unit/test_reap.py::test_classifier_matches_clean_parse_cache_key`. The D14 fast-path-reader hazard is bounded, not eliminated — see specs/04 §12.2.
 
 ## Environment variables (runtime, read by bootstrap)
 
 - `MOONLIT_ROOT` — override cache root.
 - `MOONLIT_FORCE_EXTRACT` — re-extract even if cache exists.
 - `MOONLIT_ENTRY_POINT` — override the entry point baked into env.json.
+- `MOONLIT_NO_GC` — disable the D24 runtime cache self-GC regardless of env.json `gc.enabled`.
+- `MOONLIT_GC_KEEP_LATEST` — override baked-in retention count (int ≥ 1; malformed → fall back to env.json).
+- `MOONLIT_GC_GRACE` — override baked-in age grace in seconds (int ≥ 0; malformed → fall back).
 
 When adding new env vars, prefix with `MOONLIT_` and document them in this section.
 

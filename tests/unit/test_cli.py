@@ -1480,3 +1480,111 @@ def test_clean_dry_run_does_not_modify(
     assert code == 0
     assert (tmp_path / f"myapp_{hex_a}").exists()
     assert "would delete" in stdout
+
+
+# ---------- D24: --gc / --gc-keep-latest / --gc-grace (runtime cache self-GC) ----------
+
+
+def test_no_gc_flag_default_on(
+    monkeypatch: pytest.MonkeyPatch, project_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out" / "app.pyz"
+    out.parent.mkdir()
+    monkeypatch.setattr(
+        sys, "argv", ["moonlit", "build", str(project_root), "-e", "myapp:main", "-o", str(out)]
+    )
+    captured = _capture_config(monkeypatch)
+    try:
+        cli_module.main()
+    except SystemExit as exc:
+        assert exc.code in (0, None)
+    cfg = captured["config"]
+    assert cfg.gc_enabled is True
+    assert cfg.gc_keep_latest == 2
+    assert cfg.gc_grace_seconds == 86400
+
+
+def test_gc_flags_thread_into_buildconfig(
+    monkeypatch: pytest.MonkeyPatch, project_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out" / "app.pyz"
+    out.parent.mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "moonlit",
+            "build",
+            str(project_root),
+            "--no-gc",
+            "--gc-keep-latest",
+            "3",
+            "--gc-grace",
+            "1h",
+            "-e",
+            "myapp:main",
+            "-o",
+            str(out),
+        ],
+    )
+    captured = _capture_config(monkeypatch)
+    try:
+        cli_module.main()
+    except SystemExit as exc:
+        assert exc.code in (0, None)
+    cfg = captured["config"]
+    assert cfg.gc_enabled is False
+    assert cfg.gc_keep_latest == 3
+    assert cfg.gc_grace_seconds == 3600
+
+
+@pytest.mark.parametrize("dur,seconds", [("7d", 604800), ("30m", 1800), ("45s", 45), ("2h", 7200)])
+def test_gc_grace_duration_parsed(
+    monkeypatch: pytest.MonkeyPatch, project_root: Path, tmp_path: Path, dur: str, seconds: int
+) -> None:
+    out = tmp_path / "out" / "app.pyz"
+    out.parent.mkdir()
+    monkeypatch.setattr(
+        sys,
+        "argv",
+        [
+            "moonlit",
+            "build",
+            str(project_root),
+            "--gc-grace",
+            dur,
+            "-e",
+            "myapp:main",
+            "-o",
+            str(out),
+        ],
+    )
+    captured = _capture_config(monkeypatch)
+    try:
+        cli_module.main()
+    except SystemExit as exc:
+        assert exc.code in (0, None)
+    assert captured["config"].gc_grace_seconds == seconds
+
+
+def test_gc_keep_latest_below_one_is_usage_error(
+    call_cli: Any, project_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out" / "app.pyz"
+    out.parent.mkdir()
+    code, _stdout, stderr = call_cli(
+        "build", str(project_root), "--gc-keep-latest", "0", "-e", "myapp:main", "-o", str(out)
+    )
+    assert code == 2
+    assert "--gc-keep-latest" in stderr
+
+
+def test_gc_grace_malformed_is_usage_error(
+    call_cli: Any, project_root: Path, tmp_path: Path
+) -> None:
+    out = tmp_path / "out" / "app.pyz"
+    out.parent.mkdir()
+    code, _stdout, _stderr = call_cli(
+        "build", str(project_root), "--gc-grace", "nope", "-e", "myapp:main", "-o", str(out)
+    )
+    assert code == 2

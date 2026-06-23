@@ -200,6 +200,9 @@ The bootstrap reads only:
 - `MOONLIT_FORCE_EXTRACT`
 - `MOONLIT_ENTRY_POINT`
 - `MOONLIT_DEBUG`
+- `MOONLIT_NO_GC` (D24 — disable runtime cache self-GC)
+- `MOONLIT_GC_KEEP_LATEST` (D24 — override the baked-in retention count)
+- `MOONLIT_GC_GRACE` (D24 — override the baked-in age grace, in seconds)
 
 Drop `MOONLIT_PREPEND_PYTHONPATH` and `MOONLIT_INTERPRETER` from the bootstrap spec. They are out of scope until the corresponding v0.2 features land. Adding ghost-feature env-var names to the v1 spec is anti-pattern.
 
@@ -359,6 +362,24 @@ If either probe target is missing, the launcher falls through to the PE-end + sh
 5. **Exit-code distinction**: at least one held-lock skip with `--force` unset → exit 14 (`CleanRefusedError`). I/O failure during deletion → exit 15 (`CleanIOError`). Both differ from a clean success (exit 0) so CI can tell what happened.
 
 D23 is the *only* decision that loosens read-side synchronization on the cache for an additional consumer; the bootstrap's own contract (D13, D14) is unchanged. No new on-disk artifacts, no new env vars, no daemon.
+
+## D24 — Runtime cache self-GC (default-on)
+
+Every produced artifact's bootstrap automatically prunes **its own app's** stale cache entries on the recipient machine, keeping the most recent. This is the automatic analogue of D23 (`moonlit clean`): recipients of a `.pyz`/`.exe`/folder-bundle usually do **not** have moonlit installed, so `moonlit clean` is unavailable to them, and without this the cache root grows by one staged-site-packages worth of disk on every rebuild forever (it loosens spec 04 §6's "never deleted automatically" for the recipient case).
+
+**Trigger — slow path only.** The reaper (`src/moonlit/_bootstrap/reap.py`, stdlib-only per D7, never imports `clean.py`) runs inside `extract.materialize`'s slow-path lock, immediately after `_sweep_old_siblings(site_parent)` and after the fresh tree is atomically installed. A D14 warm cache hit returns **before** the lock is acquired, so warm runs do zero extra work and emit nothing — the §14 silent-on-success and "never on the fast path" contracts are unchanged. It runs on cold first extraction and on `MOONLIT_FORCE_EXTRACT` re-extraction (both reach the slow path and both mint a fresh newest entry).
+
+**Selection.** Candidates are well-formed `<cache_key>` dirs directly under `<cache_root>/` whose normalized name equals the running app's `re.sub(r"[-_.]+","-",env.name).lower()` — **same-app only**; a different app's cache is never touched. The group (including the current key) is ranked by `<cache_key>/site-packages` `st_mtime` descending; the newest `keep_latest` are kept, the rest are deletable. The just-installed `<cache_key>` is also excluded explicitly (belt-and-suspenders; it is newest by construction). An **age grace** drops any deletable entry whose mtime is newer than `now − grace_seconds`. The reaper does **not** touch `.tmp`/`.old`/`.lock` orphans — that remains the job of `_sweep_old_siblings` (this key) and `moonlit clean` (cross-app).
+
+**Liveness (cooperative, no `--force`).** Each victim is deleted only after a successful non-blocking try-lock on its own `<victim_key>.lock` (same primitives as D13/D23); a held lock → skip. Deletion happens while holding that lock; afterwards the now-orphaned lock is unlinked. There is no force override — an automatic GC has no human asserting quiescence.
+
+**Best-effort.** The entire pass is wrapped so it never raises and never changes the app's exit code; per-victim `OSError` is caught and that entry left intact. Diagnostics are emitted only under `MOONLIT_DEBUG` (stderr). The caller (`extract`) also guards the call defensively.
+
+**The bounded hazard (not eliminated).** D13/D14 read-side synchronization is **unchanged**: a D14 fast-path reader of an older build holds no lock and is invisible to the try-lock. Reaping a build that such a reader is using is the same "undefined behavior" spec 04 §13.3 names for `moonlit clean` — now automatic. This is bounded by `keep_latest >= 2` (default), the age grace (default 24h), same-app scope, and `MOONLIT_NO_GC`; it is **not** bounded by any platform-specific `rmtree` behavior (a pure-Python reader holds no file handle, so Windows is not a reliable backstop). Converting fast-path readers to a shared lock (`fcntl.LOCK_SH` / `msvcrt.LK_NBRLCK` both exist) would close the hazard but adds a lock to every warm run — deliberately out of scope.
+
+**Policy carriage and overrides.** The default + retention is baked into env.json's optional `gc` object (D9 graduation, no `schema_version` bump): `{enabled: bool, keep_latest: int>=1, grace_seconds: int>=0}`, defaults `{true, 2, 86400}`. Build flags `--gc/--no-gc`, `--gc-keep-latest`, `--gc-grace` set it. An older archive with no `gc` field → the bootstrap applies identical built-in defaults. Recipients override at runtime via `MOONLIT_NO_GC` / `MOONLIT_GC_KEEP_LATEST` / `MOONLIT_GC_GRACE` (a malformed override falls back, never errors). env.json is emitted after `compute_build_id`, so `gc` never feeds the cache key.
+
+**Scope.** Same-app, same-`MOONLIT_ROOT`. Cross-user shared cache roots could cross-reap, but that is already unsupported in the MVP (spec 04 §13.10). Phase 1 covers `.pyz`, single-file `--windows-exe`, and `--bundle-python` folders identically (all run the same bootstrap inside the `.pyz`).
 
 ---
 

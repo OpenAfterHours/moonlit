@@ -474,3 +474,61 @@ def test_cache_key_uses_pep503_normalized_name(tmp_path: Path) -> None:
     cache = Path(env["MOONLIT_ROOT"])
     expected_key_dir = cache / f"my-app-name_{'b' * 64}"
     assert expected_key_dir.is_dir()
+
+
+# ---------- runtime cache self-GC (spec 04 §12.2 / D24) ----------
+
+
+def _gc_env(build_id: str, *, keep_latest: int = 1, grace_seconds: int = 0) -> dict:
+    e = valid_env(build_id=build_id)
+    e["gc"] = {"enabled": True, "keep_latest": keep_latest, "grace_seconds": grace_seconds}
+    return e
+
+
+def test_repeated_builds_reap_old_cache(tmp_path: Path) -> None:
+    # Two builds of the same app (different build_ids); running the second reaps
+    # the first, keeping only the most recent (keep_latest=1, grace 0).
+    user = {"myapp.py": "def main():\n    print('ran')\n    return 0\n"}
+    pyz_v1 = make_test_pyz(tmp_path / "v1.pyz", user_modules=user, env_dict=_gc_env("a" * 64))
+    pyz_v2 = make_test_pyz(tmp_path / "v2.pyz", user_modules=user, env_dict=_gc_env("b" * 64))
+    env = isolated_env(tmp_path)
+    cache = Path(env["MOONLIT_ROOT"])
+
+    code1, out1, err1 = run_pyz(pyz_v1, env=env)
+    assert code1 == 0, err1
+    assert "ran" in out1
+    assert (cache / f"myapp_{'a' * 64}").is_dir()
+
+    code2, out2, err2 = run_pyz(pyz_v2, env=env)
+    assert code2 == 0, err2
+    assert "ran" in out2
+    assert (cache / f"myapp_{'b' * 64}").is_dir()  # the new build survives
+    assert not (cache / f"myapp_{'a' * 64}").exists()  # the prior build was reaped
+
+
+def test_no_gc_env_var_preserves_old_entries(tmp_path: Path) -> None:
+    # MOONLIT_NO_GC is the recipient escape hatch: it disables reaping even when
+    # the artifact was built with GC on.
+    user = {"myapp.py": "def main():\n    return 0\n"}
+    pyz_v1 = make_test_pyz(tmp_path / "v1.pyz", user_modules=user, env_dict=_gc_env("a" * 64))
+    pyz_v2 = make_test_pyz(tmp_path / "v2.pyz", user_modules=user, env_dict=_gc_env("b" * 64))
+    env = isolated_env(tmp_path, MOONLIT_NO_GC="1")
+    cache = Path(env["MOONLIT_ROOT"])
+
+    assert run_pyz(pyz_v1, env=env)[0] == 0
+    assert run_pyz(pyz_v2, env=env)[0] == 0
+    assert (cache / f"myapp_{'a' * 64}").is_dir()  # preserved — GC suppressed
+    assert (cache / f"myapp_{'b' * 64}").is_dir()
+
+
+def test_gc_reaps_silently(tmp_path: Path) -> None:
+    # §14 silent-on-success: reaping emits nothing on stdout/stderr by default.
+    user = {"myapp.py": "def main():\n    return 0\n"}
+    pyz_v1 = make_test_pyz(tmp_path / "v1.pyz", user_modules=user, env_dict=_gc_env("a" * 64))
+    pyz_v2 = make_test_pyz(tmp_path / "v2.pyz", user_modules=user, env_dict=_gc_env("b" * 64))
+    env = isolated_env(tmp_path)
+    run_pyz(pyz_v1, env=env)
+    _code, out, err = run_pyz(pyz_v2, env=env)
+    assert out == ""
+    assert "pruned" not in err
+    assert err == ""

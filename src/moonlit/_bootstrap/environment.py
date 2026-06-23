@@ -55,6 +55,12 @@ class Environment:
     # Optional v1 field per spec 05 §7. Absent when an older moonlit produced
     # the archive; the bootstrap skips the version check in that case.
     python_version: str | None = None
+    # Optional v1 field per spec 05 §3.10 / D24. Carries the baked-in runtime
+    # cache self-GC policy ({enabled, keep_latest, grace_seconds}, any subset).
+    # Absent when an older moonlit produced the archive; the bootstrap then
+    # applies its built-in defaults. Stored as the validated raw dict —
+    # resolution of missing keys to defaults is the reaper-wiring layer's job.
+    gc: dict | None = None
 
 
 def resolve_cache_root() -> Path:
@@ -102,6 +108,7 @@ def load(archive_path: str | Path) -> Environment:
     _check_required_field_types(parsed)
     _check_field_formats(parsed)
     python_version = _read_optional_python_version(parsed)
+    gc = _read_optional_gc(parsed)
     return Environment(
         schema_version=parsed["schema_version"],
         name=parsed["name"],
@@ -111,6 +118,7 @@ def load(archive_path: str | Path) -> Environment:
         moonlit_version=parsed["moonlit_version"],
         python_shebang=parsed["python_shebang"],
         python_version=python_version,
+        gc=gc,
     )
 
 
@@ -233,3 +241,38 @@ def _read_optional_python_version(parsed: dict) -> str | None:
     if not _PYTHON_VERSION.fullmatch(value):
         raise EnvJsonError("env.json: field 'python_version' failed validation")
     return value
+
+
+def _read_optional_gc(parsed: dict) -> dict | None:
+    """Read and validate the optional ``gc`` object (spec 05 §3.10 / D24).
+
+    v1-optional: when absent the bootstrap applies its built-in defaults. When
+    present it must be a JSON object; each recognized sub-key is validated only
+    if present (the producer always emits all three, but a partial object is
+    accepted so a hand-authored override of one knob still loads). Unknown
+    sub-keys are ignored per D9. The validated raw dict is returned; resolving
+    missing keys to defaults is the reaper-wiring layer's job, not this one's.
+    """
+    if "gc" not in parsed:
+        return None
+    value = parsed["gc"]
+    # bool is a dict-incompatible scalar; isinstance(dict) already excludes it,
+    # but be explicit about the contract: gc must be a JSON object.
+    if not isinstance(value, dict):
+        raise EnvJsonError("env.json: field 'gc' has wrong type (expected object)")
+    if "enabled" in value and not isinstance(value["enabled"], bool):
+        raise EnvJsonError("env.json: field 'gc.enabled' has wrong type (expected bool)")
+    if "keep_latest" in value and not _is_positive_int(value["keep_latest"]):
+        raise EnvJsonError("env.json: field 'gc.keep_latest' failed validation")
+    if "grace_seconds" in value and not _is_nonnegative_int(value["grace_seconds"]):
+        raise EnvJsonError("env.json: field 'gc.grace_seconds' failed validation")
+    return value
+
+
+def _is_positive_int(value: object) -> bool:
+    # bool is an int subclass in Python; reject it explicitly (keep_latest >= 1).
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 1
+
+
+def _is_nonnegative_int(value: object) -> bool:
+    return isinstance(value, int) and not isinstance(value, bool) and value >= 0

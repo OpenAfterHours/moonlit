@@ -386,6 +386,98 @@ def test_bundled_python_field_in_archive_is_silently_ignored(tmp_path: Path) -> 
     assert not hasattr(loaded, "bundled_python")
 
 
+# ---------- optional gc field (spec 05 §3.10, D24 runtime cache self-GC) ----------
+
+
+def test_gc_field_absent_defaults_none(tmp_path: Path) -> None:
+    # v1-optional (D9): archives produced before the field's introduction load
+    # cleanly with gc == None; the bootstrap then applies its built-in defaults.
+    pyz = make_pyz_with(tmp_path, valid_env())
+    assert load(pyz).gc is None
+
+
+def test_old_archive_without_gc_still_loads(tmp_path: Path) -> None:
+    # Backward-compat: a brand-new bootstrap reading an old env.json that lacks
+    # the gc object must not raise — gc is purely optional.
+    env = valid_env()
+    assert "gc" not in env
+    pyz = make_pyz_with(tmp_path, env)
+    loaded = load(pyz)
+    assert loaded.name == "myapp"
+    assert loaded.gc is None
+
+
+def test_gc_field_present_parses(tmp_path: Path) -> None:
+    gc = {"enabled": True, "keep_latest": 2, "grace_seconds": 86400}
+    env = {**valid_env(), "gc": gc}
+    pyz = make_pyz_with(tmp_path, env)
+    assert load(pyz).gc == gc
+
+
+@pytest.mark.parametrize("value", ["x", 1, 1.5, [1, 2], True, None])
+def test_gc_wrong_type_raises(tmp_path: Path, value: Any) -> None:
+    env = {**valid_env(), "gc": value}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match="field 'gc' has wrong type"):
+        load(pyz)
+
+
+@pytest.mark.parametrize("value", ["yes", 1, 0, None, [True]])
+def test_gc_enabled_wrong_type_raises(tmp_path: Path, value: Any) -> None:
+    env = {**valid_env(), "gc": {"enabled": value}}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match=r"field 'gc\.enabled' has wrong type"):
+        load(pyz)
+
+
+@pytest.mark.parametrize("value", [0, -1, -5])
+def test_gc_keep_latest_out_of_range_raises(tmp_path: Path, value: int) -> None:
+    # keep_latest floor is 1: "leave the most recent one".
+    env = {**valid_env(), "gc": {"keep_latest": value}}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match=r"field 'gc\.keep_latest' failed validation"):
+        load(pyz)
+
+
+@pytest.mark.parametrize("value", ["2", 2.0, True, None, [2]])
+def test_gc_keep_latest_wrong_type_raises(tmp_path: Path, value: Any) -> None:
+    # bool is an int subclass in Python; reject it explicitly.
+    env = {**valid_env(), "gc": {"keep_latest": value}}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match=r"field 'gc\.keep_latest' failed validation"):
+        load(pyz)
+
+
+@pytest.mark.parametrize("value", [-1, -86400])
+def test_gc_grace_seconds_negative_raises(tmp_path: Path, value: int) -> None:
+    env = {**valid_env(), "gc": {"grace_seconds": value}}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match=r"field 'gc\.grace_seconds' failed validation"):
+        load(pyz)
+
+
+@pytest.mark.parametrize("value", ["0", 1.0, True, None])
+def test_gc_grace_seconds_wrong_type_raises(tmp_path: Path, value: Any) -> None:
+    env = {**valid_env(), "gc": {"grace_seconds": value}}
+    pyz = make_pyz_with(tmp_path, env)
+    with pytest.raises(EnvJsonError, match=r"field 'gc\.grace_seconds' failed validation"):
+        load(pyz)
+
+
+def test_gc_partial_object_is_accepted(tmp_path: Path) -> None:
+    # The consumer validates only the keys that are present; missing sub-keys
+    # are resolved to defaults later (in the reaper-wiring layer), not here.
+    env = {**valid_env(), "gc": {"enabled": False}}
+    pyz = make_pyz_with(tmp_path, env)
+    assert load(pyz).gc == {"enabled": False}
+
+
+def test_gc_zero_grace_seconds_is_accepted(tmp_path: Path) -> None:
+    env = {**valid_env(), "gc": {"grace_seconds": 0}}
+    pyz = make_pyz_with(tmp_path, env)
+    assert load(pyz).gc == {"grace_seconds": 0}
+
+
 # ---------- D8 ordering: earlier failures shadow later ones ----------
 
 

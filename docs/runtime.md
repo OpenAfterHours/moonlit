@@ -97,20 +97,36 @@ The lock file is **persistent by design** — closing the fd releases the OS loc
 
 If extraction fails between rename and replace, the original `<cache_key>.old.<pid>/` is renamed back. If the process is hard-killed during extraction, the OS releases the lock automatically; the per-pid tempdir may leak (it's safe to delete).
 
+After a successful install, still under the lock, the slow path runs the [automatic cache cleanup](#automatic-cache-cleanup) — pruning this app's older entries best-effort. The fast path never reaches this step.
+
 ## Environment variables
 
-The bootstrap reads exactly four:
+The bootstrap recognizes these `MOONLIT_*` variables:
 
 | Variable | Effect |
 |---|---|
 | `MOONLIT_ROOT` | Override the cache root. The path is `Path(value).expanduser().resolve()`. |
 | `MOONLIT_FORCE_EXTRACT` | Force re-extraction even on a cache hit. **Does not** bypass the lock; only the existence-skip is suppressed. |
 | `MOONLIT_ENTRY_POINT` | Override `env.json.entry_point`. Useful for testing. Same `module:attr` syntax. |
-| `MOONLIT_DEBUG` | On a bootstrap-internal error, print the Python traceback after the `moonlit:` line. Does not affect user-code traceback printing (Python's default excepthook handles those unconditionally). |
+| `MOONLIT_DEBUG` | On a bootstrap-internal error, print the Python traceback after the `moonlit:` line. Also surfaces the automatic-cleanup diagnostics. Does not affect user-code traceback printing (Python's default excepthook handles those unconditionally). |
+| `MOONLIT_NO_GC` | Disable the automatic cache cleanup (below) regardless of what the artifact was built with. |
+| `MOONLIT_GC_KEEP_LATEST` | Override how many of this app's newest cache entries to keep (int ≥ 1). A malformed value is ignored, falling back to the artifact's baked-in value. |
+| `MOONLIT_GC_GRACE` | Override the cleanup age grace, in **seconds** (int ≥ 0). Malformed → fall back. |
 
 "Truthy" means *present and non-empty after `os.environ.get(name, "")`*. The empty string is treated as unset; `MOONLIT_FORCE_EXTRACT=0` is **non-empty hence truthy** (surprising but consistent — the policy never special-cases "0", "false", or "no").
 
-Names beginning with `MOONLIT_` other than the four above are reserved for future versions and ignored today. `MOONLIT_BUNDLED_PYTHON` was used by moonlit 0.3.0's runtime-extraction launcher; the v0.4.0 folder-bundle redesign retired it.
+Names beginning with `MOONLIT_` other than those above are reserved for future versions and ignored today. `MOONLIT_BUNDLED_PYTHON` was used by moonlit 0.3.0's runtime-extraction launcher; the v0.4.0 folder-bundle redesign retired it.
+
+## Automatic cache cleanup
+
+By default, a built artifact prunes its **own** older cache entries automatically, so a recipient's cache root doesn't grow by one extracted `site-packages` on every rebuild. Recipients usually don't have the `moonlit` CLI, so this is the only cleanup they get for free. (Build with `--no-gc` to opt out.)
+
+- **When.** Only on the slow path — right after a *new* build extracts (cold first run, or `MOONLIT_FORCE_EXTRACT`), while the extraction lock is held. A warm cache hit does nothing extra and prints nothing.
+- **What.** Among cache entries for the **same app** (matched by normalized name), it keeps the newest `keep_latest` (default **2**) and deletes the rest — but only those older than the **grace** window (default **24h**), and never the entry it just created. A *different* app's cache, unknown directories, and `.tmp`/`.old`/`.lock` orphans are never touched.
+- **How safely.** Each entry is deleted only after a non-blocking lock acquisition, so it never races a concurrent extractor of that entry. The whole pass is best-effort: any failure is swallowed and your app still runs. It is silent unless `MOONLIT_DEBUG` is set.
+- **Caveat.** A cache-hit reader of an *older* build holds no lock and can't be detected. The keep-2 default, the 24h grace, and the same-app scope make reaping an in-use build unlikely but not impossible. If you run many builds of one app concurrently, raise `--gc-keep-latest` / `--gc-grace` at build time, or set `MOONLIT_NO_GC` on the affected machine.
+
+The policy is baked in at build time via `--gc` / `--no-gc`, `--gc-keep-latest`, and `--gc-grace`, recorded in `env.json.gc`, and overridable at runtime via the `MOONLIT_NO_GC` / `MOONLIT_GC_KEEP_LATEST` / `MOONLIT_GC_GRACE` variables above.
 
 ## Runtime exit codes
 

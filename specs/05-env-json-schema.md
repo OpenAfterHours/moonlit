@@ -5,7 +5,7 @@
 - Path inside the .pyz: `env.json` at the archive root (top-level zip entry per D1).
 - Encoding: UTF-8, no BOM.
 - Top-level JSON value: object.
-- Role: the bootstrap reads it to derive the cache key and the entry point; tooling reads it for human inspection. The bootstrap consumes only the four fields whose "Used by" column names it; everything else is informational.
+- Role: the bootstrap reads it to derive the cache key and the entry point; tooling reads it for human inspection. The bootstrap consumes the fields whose "Used by" column names it in Section 2 (the single source of truth); everything else is informational.
 
 **Threat model (v1).** `env.json` is **not authenticated**. A modified .pyz could ship a forged env.json and the bootstrap will trust it. Integrity verification is the `--no-modify` feature deferred to v0.2. The bootstrap must not auto-execute privileged behavior keyed solely on `name`.
 
@@ -21,6 +21,7 @@
 | `moonlit_version` | string | yes      | non-empty; PEP 440 (informational)              | tooling                          |
 | `python_shebang`  | string | yes      | non-empty; no `\n`; no leading `#!`             | tooling                          |
 | `python_version`  | string | no       | `^\d+\.\d+$` (major.minor only) — see §3.8      | bootstrap, tooling               |
+| `gc`              | object | no       | `{enabled:bool, keep_latest:int≥1, grace_seconds:int≥0}` — see §3.10 | bootstrap, tooling   |
 
 "Non-empty" means `len(s) > 0`. Whitespace-only is non-empty by this definition; that is accepted and not a producer error.
 
@@ -52,6 +53,14 @@ The `re.IGNORECASE` flag is mandatory. Without it, all-lowercase names (e.g. `my
 
 3.8 `python_version` (v1-optional) — must match `^\d+\.\d+$` when present, e.g. `"3.13"`. Stores the **target** Python's `major.minor` and matches the `cp<X><Y>` ABI tag of every wheel uv stages. Source-of-truth at build time: `BuildConfig.python_version` (set when the user passes `--python-version`, D20 cross-interpreter builds), falling back to the build host's `sys.version_info.major.minor`. The bootstrap compares this against the runtime interpreter's major.minor and exits 1 with a "built for X.Y, running A.B" message on mismatch — surfacing the real cause of the otherwise-mysterious `ModuleNotFoundError: No module named '<pkg>._core'` that occurs when a wheel's `.pyd` is silently skipped for ABI-tag mismatch. When the field is absent (older archives produced before this field's introduction) the bootstrap skips the check.
 
+3.10 `gc` (v1-optional) — runtime cache self-GC policy (D24, specs/04-cache-layout.md §12.2). When present, must be a JSON **object**; each recognized sub-key is validated only if present (a partial object is accepted so a hand-authored override of a single knob still loads; unknown sub-keys are ignored per D9):
+
+- `enabled` — `bool` (reject non-bool, including `0`/`1`).
+- `keep_latest` — `int`, `not isinstance(bool)`, `>= 1` (the floor encodes "leave the most recent one").
+- `grace_seconds` — `int`, `not isinstance(bool)`, `>= 0`.
+
+The producer always emits all three (defaults `{true, 2, 86400}`). When the whole field is **absent** (older archives) the bootstrap applies identical built-in defaults — it is never required. The stored value is the raw validated dict; resolving missing keys to defaults and applying the `MOONLIT_NO_GC` / `MOONLIT_GC_KEEP_LATEST` / `MOONLIT_GC_GRACE` runtime overrides is the bootstrap reaper's job, not the loader's. Emitted **after** `build_id` is computed, so `gc` never feeds the cache key (§5).
+
 3.9 (reserved) — `bundled_python` was a v1-optional sub-object in moonlit 0.3.0 that recorded a runtime-extraction fingerprint. It was retired alongside the D21 redesign (folder-bundle layout): the bundled-Python state is now observable from the on-disk folder layout, not from `env.json`. Producers do NOT emit this field. Consumers MUST treat any `bundled_python` that appears in an archive produced by an older release as an unknown field per D9 and ignore it; the bootstrap does not branch on its presence.
 
 ## 4. Validation algorithm (D8, consumer)
@@ -68,6 +77,7 @@ Bootstrap and tooling validate in this exact order. The first failure exits the 
 8. Each required field has the correct JSON type (per Section 2) — `"env.json: field '<field>' has wrong type (expected <T>)"`. JSON `null` for any required field is reported here, since `None` is not the expected type.
 9. Each required field passes its format check (Section 3) — `"env.json: field '<field>' failed validation"`.
 10. If `python_version` is present, validate its type (`"env.json: field 'python_version' has wrong type (expected string)"`) and format (`"env.json: field 'python_version' failed validation"`). When absent, skip — the field is optional.
+11. If `gc` is present, validate it is an object (`"env.json: field 'gc' has wrong type (expected object)"`), then each present sub-key: `gc.enabled` bool (`"env.json: field 'gc.enabled' has wrong type (expected bool)"`), `gc.keep_latest` int ≥ 1 (`"env.json: field 'gc.keep_latest' failed validation"`), `gc.grace_seconds` int ≥ 0 (`"env.json: field 'gc.grace_seconds' failed validation"`). When absent, skip — the field is optional.
 
 Duplicate keys: `json.loads` silently keeps the last occurrence per stdlib semantics. v1 accepts this and does not install an `object_pairs_hook` to detect it. Documented, not enforced.
 
@@ -102,7 +112,7 @@ Reserved: `hashes`, `compile_pyc`, `preamble`, `reproducible`.
 
 - **Producer obligation (v1).** Producers MUST NOT emit any reserved field name. The build pipeline writes a fixed, closed object.
 - **Consumer obligation (v1).** Consumers MUST ignore unknown fields, including any reserved name that appears in a future-built archive.
-- **Graduation.** When a future v0.x release adds an optional field (e.g. `hashes` in v0.2), it moves from "reserved" to "v1-optional". Because v1 consumers were already required to ignore it, this is **not** a `schema_version` bump and v0.x producers MAY emit it without bumping.
+- **Graduation.** When a future v0.x release adds an optional field (e.g. `hashes` in v0.2), it moves from "reserved" to "v1-optional". Because v1 consumers were already required to ignore it, this is **not** a `schema_version` bump and v0.x producers MAY emit it without bumping. The same applies to a brand-new optional field that was never on the reserved list: `gc` (§3.10, D24) was added this way — v1 consumers already ignore unknown fields, so adding it is not a bump. Going forward `gc` is a recognized v1-optional field, not a reserved name.
 - **Bumps.** `schema_version` increments only when a required field is renamed or removed, a field's type changes, or the bootstrap contract on field semantics changes.
 
 ## 8. Complete v1 example
@@ -112,6 +122,11 @@ Reserved: `hashes`, `compile_pyc`, `preamble`, `reproducible`.
   "build_id": "a3f1c2d4e5f60718293a4b5c6d7e8f90112233445566778899aabbccddeeff00",
   "built_at": "2026-05-08T15:23:01Z",
   "entry_point": "myapp.cli:main",
+  "gc": {
+    "enabled": true,
+    "grace_seconds": 86400,
+    "keep_latest": 2
+  },
   "moonlit_version": "0.1.0",
   "name": "myapp",
   "python_shebang": "/usr/bin/env python3",
@@ -138,6 +153,10 @@ The example terminates with a single `\n` byte not shown above.
 | `entry_point` contains whitespace                 | 9    | 1              | `env.json: field 'entry_point' failed validation`                                             |
 | `python_version` present but non-string           | 10   | 1              | `env.json: field 'python_version' has wrong type (expected string)`                           |
 | `python_version` present but bad format           | 10   | 1              | `env.json: field 'python_version' failed validation`                                          |
+| `gc` present but not an object                     | 11   | 1              | `env.json: field 'gc' has wrong type (expected object)`                                       |
+| `gc.enabled` present but not a bool                | 11   | 1              | `env.json: field 'gc.enabled' has wrong type (expected bool)`                                 |
+| `gc.keep_latest` present but not int ≥ 1           | 11   | 1              | `env.json: field 'gc.keep_latest' failed validation`                                          |
+| `gc.grace_seconds` present but not int ≥ 0         | 11   | 1              | `env.json: field 'gc.grace_seconds' failed validation`                                        |
 | `python_version` differs from runtime major.minor | n/a  | 1              | `this archive was built for Python <X.Y>, but you are running Python <A.B>; ...` (spec 03)    |
 | Duplicate keys in JSON source                     | 3*   | 0 (accepted)   | last-wins per `json.loads`; not detected                                                      |
 | Unknown extra field                               | n/a  | 0 (accepted)   | ignored (D9)                                                                                  |
