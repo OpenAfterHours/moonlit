@@ -49,7 +49,7 @@ In folder-bundle mode (D21) the launcher always dispatches `_python/python.exe`,
 7. Compute `site_parent` and `site_dir`.
 8. **Fast path (D14, no lock):** if `site_dir.is_dir()` AND `MOONLIT_FORCE_EXTRACT` is unset → goto 11.
 9. **Slow path:** acquire **lock_path** (Section 5). Re-check `site_dir.is_dir()` AND `MOONLIT_FORCE_EXTRACT` unset; if both true (sibling won the race), release lock and goto 11.
-10. Extract (Section 6). Atomically install (D4). Sweep stale `.old.<otherpid>` siblings best-effort. Release lock in `finally`.
+10. Extract (Section 6). Atomically install (D4). Sweep stale `.old.<otherpid>` siblings best-effort. Then, when GC is enabled (env.json `gc.enabled` and not `MOONLIT_NO_GC`), run the same-app cache self-GC (D24, specs/04-cache-layout.md §12.2) best-effort — still under the held lock. Release lock in `finally`. Both the sweep and the reap are best-effort: any failure is swallowed and never changes the exit code.
 11. Verify the staged tree does not collide with `_bootstrap` (Section 7). Call `site.addsitedir(str(site_dir))`.
 12. Resolve entry point (Section 8). Import + invoke with no arguments.
 13. Coerce return value (Section 8). Mask `& 0xFF`. Return.
@@ -177,14 +177,19 @@ Coercion of the return value:
 
 ## 9. Environment variables (D16)
 
-Four are read. "Truthy" means present and non-empty after `os.environ.get(name, "")`.
+Seven are read. "Truthy" means present and non-empty after `os.environ.get(name, "")`.
 
 | Variable | Meaning |
 |----------|---------|
 | `MOONLIT_ROOT` | Override cache root. |
 | `MOONLIT_FORCE_EXTRACT` | Force re-extraction even on cache hit (does NOT bypass lock). |
 | `MOONLIT_ENTRY_POINT` | Override `env.entry_point`. |
-| `MOONLIT_DEBUG` | Print bootstrap-internal tracebacks to stderr on failure. |
+| `MOONLIT_DEBUG` | Print bootstrap-internal tracebacks (and D24 reap diagnostics) to stderr. |
+| `MOONLIT_NO_GC` | Disable the D24 runtime cache self-GC regardless of env.json `gc.enabled`. |
+| `MOONLIT_GC_KEEP_LATEST` | Override the baked-in `gc.keep_latest` (int ≥ 1; malformed → fall back). |
+| `MOONLIT_GC_GRACE` | Override the baked-in `gc.grace_seconds` (int ≥ 0 seconds; malformed → fall back). |
+
+The three `MOONLIT_GC_*` / `MOONLIT_NO_GC` vars are read by the D24 reaper (specs/04-cache-layout.md §12.2). They follow the same "truthy = present and non-empty" rule for `MOONLIT_NO_GC`; the two integer overrides are parsed leniently and silently ignored when malformed so a bad knob never fails the run.
 
 `MOONLIT_FORCE_EXTRACT=0` is **non-empty hence truthy** — surprising but consistent with the policy. No special-casing of `0` / `false` / `no`. `MOONLIT_PREPEND_PYTHONPATH` and `MOONLIT_INTERPRETER` are NOT recognized in v0.1; they are reserved for v0.2 features and listed nowhere in the v1 contract. `MOONLIT_BUNDLED_PYTHON` was used by moonlit 0.3.0 to skip the python-version check when the launcher dispatched a bundled interpreter; it was retired alongside the D21 folder-bundle redesign and is no longer read.
 
@@ -216,6 +221,8 @@ Behavior — designed to preserve the silent-on-success contract of Section 10:
 
 No new environment variable gates this. TTY-gating already suppresses every case where the indicator could contaminate logs, and the line is transient, so the D16 env-var contract (Section 9) is unchanged.
 
+The D24 cache self-GC (specs/04-cache-layout.md §12.2), which runs after extraction on the slow path, is **silent on success**: it paints no progress line and writes nothing to stdout/stderr. Only `MOONLIT_DEBUG` surfaces per-victim `moonlit: pruned <key>` / `skipped <key> (locked)` diagnostics on stderr. This preserves the Section 10 silent-on-success contract — the user is running *their* app, not a moonlit command.
+
 ## 12. Stdlib-only constraint
 
 The bootstrap MUST import only from the Python 3.13 standard library. Allowed modules and their justifications:
@@ -240,6 +247,8 @@ The bootstrap MUST import only from the Python 3.13 standard library. Allowed mo
 | `msvcrt` | `msvcrt.locking(LK_NBLCK, 1)` on Windows (D13). Imported only on `os.name == "nt"`. |
 
 Enforced by **`tests/unit/test_bootstrap_stdlib_only.py`** (D7), which AST-walks `src/moonlit/_bootstrap/`, collects every absolute import name, and asserts each is in `sys.stdlib_module_names`. The test runs in CI on every push. There is no runtime self-check; the test is the gate. A second test in the same file asserts that no module under `_bootstrap/` references `os.rename` outside of the documented D4 protocol.
+
+The D24 reaper (`reap.py`) introduces **no new module**: it uses `os`, `re`, `shutil`, `sys`, `time`, `pathlib` (all already allowed above) plus the in-package `.locking` and `.environment` relative imports. The stdlib gate covers it automatically.
 
 ## 13. Edge cases (enumerated)
 

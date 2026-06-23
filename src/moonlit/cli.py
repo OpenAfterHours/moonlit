@@ -155,6 +155,32 @@ def cli(ctx: click.Context) -> None:
     default=False,
     help="Overwrite an existing regular-file output.",
 )
+@click.option(
+    "--gc/--no-gc",
+    "gc_enabled",
+    default=True,
+    help=(
+        "Bake in runtime cache self-GC (default on): on the recipient machine "
+        "the app trims its own older extracted cache entries after a fresh "
+        "extraction, keeping the most recent. See D24."
+    ),
+)
+@click.option(
+    "--gc-keep-latest",
+    "gc_keep_latest",
+    type=int,
+    default=2,
+    help="How many newest cache entries of this app to retain (>= 1; default 2).",
+)
+@click.option(
+    "--gc-grace",
+    "gc_grace",
+    default=None,
+    help=(
+        "Only reap cache entries older than this (e.g. 30m, 24h, 7d). "
+        "Default 24h. Guards a concurrently-running predecessor build."
+    ),
+)
 @click.option("-q", "--quiet", "quiet", is_flag=True, default=False)
 @click.option("-v", "--verbose", "verbose", is_flag=True, default=False)
 @click.pass_context
@@ -172,6 +198,9 @@ def build_cmd(
     python_version: str | None,
     bundle_python: bool,
     force: bool,
+    gc_enabled: bool,
+    gc_keep_latest: int,
+    gc_grace: str | None,
     quiet: bool,
     verbose: bool,
 ) -> None:
@@ -198,6 +227,7 @@ def build_cmd(
         raise click.UsageError("--windows-exe requires --output-file to end in .exe")
     if python_version is not None:
         _validate_python_version(python_version)
+    gc_grace_seconds = _resolve_gc_grace_seconds(gc_keep_latest, gc_grace)
     if (
         windows_exe
         and ctx.get_parameter_source("python_shebang") == click.core.ParameterSource.DEFAULT
@@ -247,6 +277,9 @@ def build_cmd(
         windows_exe=windows_exe,
         python_version=python_version,
         bundle_python=bundle_python,
+        gc_enabled=gc_enabled,
+        gc_keep_latest=gc_keep_latest,
+        gc_grace_seconds=gc_grace_seconds,
     )
     sys.exit(run_build(config))
 
@@ -484,3 +517,24 @@ def _validate_python_version(value: str) -> None:
     """D20: --python-version must be major.minor only (matches cp<X><Y> ABI tag)."""
     if not _PYTHON_VERSION_RE.fullmatch(value):
         raise click.UsageError(f"--python-version must be major.minor (e.g. 3.12); got {value!r}")
+
+
+_GC_DEFAULT_GRACE_SECONDS = 86400  # 24h; mirrors BuildConfig.gc_grace_seconds default.
+
+
+def _resolve_gc_grace_seconds(gc_keep_latest: int, gc_grace: str | None) -> int:
+    """D24: validate --gc-keep-latest and resolve --gc-grace to whole seconds.
+
+    Reuses ``clean._parse_duration`` (same ``<int><s|m|h|d>`` grammar as
+    ``moonlit clean --older-than``) so the build and clean surfaces stay
+    consistent. Importing the build-time ``clean`` module here is fine — this
+    is CLI code, not the stdlib-only bootstrap (D7 governs only ``_bootstrap``).
+    """
+    if gc_keep_latest < 1:
+        raise click.UsageError("--gc-keep-latest must be >= 1")
+    if gc_grace is None:
+        return _GC_DEFAULT_GRACE_SECONDS
+    try:
+        return int(clean_module._parse_duration(gc_grace).total_seconds())
+    except ValueError as exc:
+        raise click.UsageError(str(exc)) from exc

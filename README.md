@@ -171,7 +171,8 @@ tests/
 | Atomic `.pyz` output (temp-then-rename) | done |
 | First-run extraction + cache-hit fast path | done |
 | Cross-platform caching (`%LOCALAPPDATA%`, `~/.moonlit`) | done |
-| `MOONLIT_ROOT`, `MOONLIT_FORCE_EXTRACT`, `MOONLIT_ENTRY_POINT`, `MOONLIT_DEBUG` | done |
+| Automatic same-app cache self-GC (keep newest N, default on) | done |
+| `MOONLIT_ROOT`, `MOONLIT_FORCE_EXTRACT`, `MOONLIT_ENTRY_POINT`, `MOONLIT_DEBUG`, `MOONLIT_NO_GC`, `MOONLIT_GC_KEEP_LATEST`, `MOONLIT_GC_GRACE` | done |
 | `--windows-exe` native launcher | done |
 | `--bundle-python` (ship CPython next to a launcher `.exe` as a folder bundle, Windows phase 1) | done |
 | Real `flock`/`msvcrt` locking | done |

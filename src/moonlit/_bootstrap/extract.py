@@ -16,7 +16,7 @@ import zipfile
 from pathlib import Path
 from time import sleep
 
-from . import progress
+from . import progress, reap
 from .environment import Environment
 from .errors import ExtractionError
 from .locking import lock
@@ -62,6 +62,7 @@ def materialize(
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
         _sweep_old_siblings(site_parent)
+        _reap_old_builds(env, cache_root)
 
     return site_dir
 
@@ -227,3 +228,17 @@ def _sweep_old_siblings(site_parent: Path) -> None:
     for entry in parent.iterdir():
         if entry.name.startswith(prefix):
             shutil.rmtree(entry, ignore_errors=True)
+
+
+def _reap_old_builds(env: Environment, cache_root: Path) -> None:
+    """D24: prune this app's older cache entries, keeping the most recent.
+
+    Slow-path only (after the fresh tree is installed, still under the lock), so
+    the D14 warm fast path stays untouched. ``reap.reap`` is itself best-effort
+    and never raises; the guard here is belt-and-suspenders so a bug in the
+    reaper can never fail the user's app run.
+    """
+    try:
+        reap.reap(env, cache_root)
+    except Exception:  # GC must never break the user's app run; swallow all.
+        pass

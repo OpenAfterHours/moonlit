@@ -324,6 +324,74 @@ def test_env_json_decodes_to_expected_payload(
     assert len(env["build_id"]) == 64
 
 
+# ---------- gc policy producer (spec 05 §3.10 / D24) ----------
+
+
+def test_env_json_stamps_gc_defaults(
+    project_root: Path, output_path: Path, fake_resolver: dict
+) -> None:
+    # Default BuildConfig: GC on, keep 2, 24h grace.
+    config = make_config(project_root, output_path)
+    build(config)
+    with zipfile.ZipFile(output_path, "r") as zf:
+        env = json.loads(zf.read("env.json").decode("utf-8"))
+    assert env["gc"] == {"enabled": True, "keep_latest": 2, "grace_seconds": 86400}
+
+
+def test_no_gc_flag_disables_in_env_json(
+    project_root: Path, output_path: Path, fake_resolver: dict
+) -> None:
+    config = make_config(project_root, output_path, gc_enabled=False)
+    build(config)
+    with zipfile.ZipFile(output_path, "r") as zf:
+        env = json.loads(zf.read("env.json").decode("utf-8"))
+    assert env["gc"]["enabled"] is False
+    # keep_latest / grace_seconds are still stamped even when disabled.
+    assert env["gc"]["keep_latest"] == 2
+    assert env["gc"]["grace_seconds"] == 86400
+
+
+def test_gc_keep_latest_and_grace_are_stamped(
+    project_root: Path, output_path: Path, fake_resolver: dict
+) -> None:
+    config = make_config(project_root, output_path, gc_keep_latest=1, gc_grace_seconds=3600)
+    build(config)
+    with zipfile.ZipFile(output_path, "r") as zf:
+        env = json.loads(zf.read("env.json").decode("utf-8"))
+    assert env["gc"] == {"enabled": True, "keep_latest": 1, "grace_seconds": 3600}
+
+
+def test_env_json_gc_does_not_affect_build_id(
+    project_root: Path, tmp_path: Path, fake_resolver: dict
+) -> None:
+    # The load-bearing invariant: env.json bytes (now including gc) are NOT part
+    # of build_id. Two builds with different gc policy but identical staging
+    # must produce the same build_id.
+    out_a = tmp_path / "a.pyz"
+    out_b = tmp_path / "b.pyz"
+    build(make_config(project_root, out_a, gc_enabled=True, gc_keep_latest=2))
+    build(make_config(project_root, out_b, gc_enabled=False, gc_keep_latest=9, gc_grace_seconds=1))
+    with zipfile.ZipFile(out_a, "r") as zf:
+        env_a = json.loads(zf.read("env.json").decode("utf-8"))
+    with zipfile.ZipFile(out_b, "r") as zf:
+        env_b = json.loads(zf.read("env.json").decode("utf-8"))
+    assert env_a["build_id"] == env_b["build_id"]
+    assert env_a["gc"] != env_b["gc"]  # sanity: the policy really did differ
+
+
+def test_env_json_keys_stay_sorted_with_gc(
+    project_root: Path, output_path: Path, fake_resolver: dict
+) -> None:
+    # gc sorts before name/python_* — confirm the producer's sort_keys still holds.
+    config = make_config(project_root, output_path)
+    build(config)
+    with zipfile.ZipFile(output_path, "r") as zf:
+        text = zf.read("env.json").decode("utf-8")
+    top_keys = re.findall(r'^  "(\w+)":', text, re.MULTILINE)
+    assert top_keys == sorted(top_keys)
+    assert "gc" in top_keys
+
+
 # ---------- compression (step 9.4) ----------
 
 

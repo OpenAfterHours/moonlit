@@ -67,7 +67,9 @@ Extraction protocol:
 
 ## 6. Lifecycle
 
-Created by bootstrap on first run or when `MOONLIT_FORCE_EXTRACT=1`. Read by bootstrap on cache hit. Modified during normal use only by Python's bytecode compiler (Section 7). Never deleted automatically; manual reaping is the user's job. The `moonlit clean` subcommand (specs/01-cli.md §2.4, policy in §12.1 below) is the supported tool — there is no daemon and no implicit GC.
+Created by bootstrap on first run or when `MOONLIT_FORCE_EXTRACT=1`. Read by bootstrap on cache hit. Modified during normal use only by Python's bytecode compiler (Section 7).
+
+Reaped automatically (D24): on the extraction slow path, the bootstrap prunes **this app's own** older `<cache_key>` entries, retaining the newest `keep_latest` (default 2) past an age grace (default 24h). This is the automatic, same-app-scoped, recipient-side analogue of `moonlit clean` (since recipients usually lack the `moonlit` CLI); policy in §12.2 below. The `moonlit clean` subcommand (specs/01-cli.md §2.4, policy in §12.1) remains the supported tool for **cross-app**, whole-cache, and orphan reaping. There is still no daemon; the only automatic reaper is D24's same-app self-GC, and it runs only as a side effect of an extraction.
 
 ## 7. Read-mostly contract
 
@@ -122,10 +124,11 @@ Stale `.<cache_key>.old.<pid>/` siblings are opportunistically swept on the next
 | `<cache_key>/site-packages/**/__pycache__/` | At any time; CPython will regenerate. |
 | `<cache_key>/` while a `.pyz` of that key runs | NEVER. |
 | `.<cache_key>.tmp.<pid>/` mid-extraction | NEVER. |
+| `<cache_key>/` via runtime auto-GC (D24) | Its `<cache_key>.lock` try-lock succeeds AND `site-packages` mtime is older than the grace AND it is not the just-installed key. The residual D14 fast-path-reader hazard is accepted, bounded by `keep_latest` + grace + same-app scope; never relies on platform `rmtree` behavior. |
 
 ## 12. GC, disk usage, path normalization
 
-No implicit GC; every distinct `<cache_key>` consumes one staged-site-packages worth of disk until the user explicitly reaps it. `realpath` after env-var expansion; internal comparisons use `os.path.normpath`; on-disk paths use the native separator. Moonlit creates no symlinks.
+Disk usage is bounded per app by the D24 self-GC (§12.2): each app retains at most `keep_latest` staged-site-packages worth of disk for entries past the grace window; `moonlit clean` (§12.1) is the cross-app / whole-cache tool. (Before D24, every distinct `<cache_key>` was immortal until manually reaped — that is no longer true for an app's own keys.) `realpath` after env-var expansion; internal comparisons use `os.path.normpath`; on-disk paths use the native separator. Moonlit creates no symlinks.
 
 ## 12.1 GC policy (`moonlit clean`)
 
@@ -151,6 +154,22 @@ When more than one filter is set, the deletion set is the intersection. `--keep-
 **Output.** A four-action table (`keep`, `delete`, `skip`, `orphan`) on stderr followed by a single trailer line on stdout (`deleted N entries, freed <bytes_humanized>` or `would delete …, would free …` under `--dry-run`). Full grammar in specs/01-cli.md §2.4.
 
 **Bare invocation.** `moonlit clean` with none of `--all`, `--older-than`, `--keep-latest`, `--name` exits 2 with a usage message. There is no implicit "scan and report" default — that would tempt users into a "do nothing" mental model.
+
+## 12.2 Automatic self-GC (D24)
+
+The bootstrap baked into every artifact runs a **same-app, slow-path-only** reaper so a recipient's cache root does not grow by one staged-site-packages per rebuild forever. It is the automatic analogue of §12.1; recipients usually lack the `moonlit` CLI. Implemented in `src/moonlit/_bootstrap/reap.py` (stdlib-only, D7) — it mirrors but never imports `clean.py`.
+
+**Trigger.** Final step inside `extract.materialize`'s slow-path lock, immediately after `_sweep_old_siblings(site_parent)` and after the fresh tree is atomically installed (D4). A D14 warm cache hit returns before the lock, so the reaper is never constructed on the fast path; warm runs do zero extra work and emit nothing (preserves §9 / spec 03 §14). Runs on cold first extraction and on `MOONLIT_FORCE_EXTRACT`.
+
+**Selection.** Candidates are well-formed `<cache_key>` dirs directly under `<cache_root>/` whose normalized name equals the running app's (`re.sub(r"[-_.]+","-",env.name).lower()`). The same-app group (including the current key) is ranked by `<cache_key>/site-packages` `st_mtime` descending; the newest `keep_latest` survive, the rest are deletable. The just-installed key is excluded explicitly. Deletable entries newer than `now − grace_seconds` are spared (age grace). Cross-app entries, UNKNOWN names (e.g. a future `v2/` subtree), and `.tmp`/`.old`/`.lock` orphans are **never** touched by the reaper — orphan reaping stays with `_sweep_old_siblings` (this key) and `moonlit clean` (cross-app).
+
+**Liveness model.** Cooperative, identical primitives to §12.1 / D23: for each victim, try-acquire `<victim_key>.lock` non-blocking; on contention SKIP (a live extractor of that key owns it). Deletion (`shutil.rmtree`) happens while holding the lock; the now-orphaned lock file is unlinked after release. There is **no `--force` equivalent** — an automatic GC has no human asserting quiescence.
+
+**Best-effort.** The whole pass never raises and never changes the app's exit code; a per-victim `OSError` (e.g. a Windows-held handle) is caught and that entry left intact. Silent on success; `MOONLIT_DEBUG` emits `moonlit: pruned <key>` / `skipped <key> (locked)` to stderr.
+
+**Residual hazard (bounded, not eliminated).** A D14 fast-path reader of an older build holds no lock and is invisible here (§9, D14). Reaping a build such a reader is importing from is the same undefined behavior as §13.3 — now automatic rather than human-initiated. Bounded by `keep_latest >= 2` (default), the age grace (default 24h), same-app scope, and the `MOONLIT_NO_GC` opt-out; **not** by any platform `rmtree` behavior (a pure-Python reader holds no file handle, so Windows is not a reliable backstop).
+
+**Policy + overrides.** Carried in env.json's optional `gc` object (spec 05 §3.10): `{enabled, keep_latest, grace_seconds}`, defaults `{true, 2, 86400}`, set at build time by `--gc/--no-gc`, `--gc-keep-latest`, `--gc-grace`. An archive without the field → built-in defaults. Recipient runtime overrides: `MOONLIT_NO_GC` (disable), `MOONLIT_GC_KEEP_LATEST`, `MOONLIT_GC_GRACE` (seconds); a malformed override falls back to the env.json value and never errors.
 
 ## 13. Edge cases
 

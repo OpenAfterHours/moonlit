@@ -72,6 +72,14 @@ class BuildConfig:
     # invoking <basename>.exe; the launcher (D22) finds the bundled interpreter
     # via a sibling-file probe and spawns it directly. No runtime extraction.
     bundle_python: bool = False
+    # D24: runtime cache self-GC policy baked into env.json. On the recipient
+    # machine the bootstrap, after a fresh extraction, reaps older cache
+    # entries of THIS app, keeping the newest `gc_keep_latest`. Defaults: on,
+    # keep 2 (current + one predecessor), 24h age grace before an entry is
+    # eligible. Recipients can override/disable via MOONLIT_NO_GC etc.
+    gc_enabled: bool = True
+    gc_keep_latest: int = 2
+    gc_grace_seconds: int = 86400
 
 
 @dataclass(frozen=True)
@@ -458,6 +466,16 @@ def _build_env_dict(
         "python_version": (
             config.python_version or f"{sys.version_info.major}.{sys.version_info.minor}"
         ),
+        # D24: baked-in runtime cache self-GC policy. Always emitted (stable
+        # byte-shape) so `moonlit info` and the bootstrap can read it; the
+        # bootstrap falls back to identical built-in defaults when absent in an
+        # older archive. Emitted AFTER compute_build_id, so it never feeds the
+        # cache key (spec 05 §5 invariant; verified by test).
+        "gc": {
+            "enabled": config.gc_enabled,
+            "keep_latest": config.gc_keep_latest,
+            "grace_seconds": config.gc_grace_seconds,
+        },
     }
 
 

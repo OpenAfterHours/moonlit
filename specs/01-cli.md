@@ -45,6 +45,9 @@ moonlit build [PROJECT] [flags]
 |       | `--python-version` | string | none (build host's `sys.version_info`) | no | Target Python `major.minor` for cross-interpreter builds (e.g. `3.12`). Threaded through every `uv` invocation as `--python-version` so wheels are tagged for that ABI; stamped into `env.json` as `python_version` for the runtime mismatch check. Format: `^\d+\.\d+$`. See D20. |
 |       | `--bundle-python` | flag | false | no | Produce a self-contained **directory bundle** that ships a managed CPython interpreter alongside the application zipapp and a thin launcher `.exe` (so recipients without Python on `PATH` can still run it). With this flag set, `-o` names the output directory; it MUST NOT end in `.exe` or `.pyz`. Fetched via `uv python install`; honors `--python-version`. See D21, D22. |
 |       | `--force` | flag | false | no | If `<output>` exists and is a regular file, overwrite it. Has no effect when the path does not exist. Does NOT cover non-file targets (see Section 5). |
+|       | `--gc` / `--no-gc` | flag | `--gc` (on) | no | Bake runtime cache self-GC into the artifact (D24): on the recipient machine the app trims its own older extracted cache entries after a fresh extraction, keeping the most recent. Stamps `env.json.gc.enabled`. See specs/04-cache-layout.md §12.2. |
+|       | `--gc-keep-latest` | int | `2` | no | How many newest cache entries of this app to retain (must be ≥ 1; `< 1` → exit 2). Stamps `env.json.gc.keep_latest`. |
+|       | `--gc-grace` | duration | `24h` | no | Only reap entries older than this (`<int><s\|m\|h\|d>`, same grammar as `clean --older-than`). Stamps `env.json.gc.grace_seconds`. Malformed → exit 2. |
 | `-q` | `--quiet` | flag | false | no | Suppress non-error stderr. |
 | `-v` | `--verbose` | flag | false | no | Echo `uv` invocations as `+ uv <argv>` on stderr (POSIX `shlex.quote` style on all platforms, for copy-paste consistency); show tracebacks on errors. |
 |       | `--help` / `-h` | flag | — | no | Print build help to stdout, exit 0. Short-circuits all validation (D3 codes 2-11 are not raised). |
@@ -162,6 +165,7 @@ orphan  myapp.tmp.4  —         3d    1.2 MiB    <cache_root>/.myapp_....tmp.4
 5. `--windows-exe` (without `--bundle-python`) requires `--output-file` to end in `.exe` (D19b). `moonlit build --windows-exe -e a:b -o app.pyz` → exit 2. The check is `output_file.lower().endswith(".exe")` — the case-insensitive form covers user paths like `App.EXE` on Windows file systems.
 6. `--bundle-python` produces a folder output (D21a). With `--bundle-python` set, `-o` MUST NOT end in `.exe` or `.pyz`; either suffix → exit 2 with a usage message explaining that the output is a directory. `--windows-exe` may also be set alongside `--bundle-python` — it is accepted as a no-op (the folder bundle always contains a launcher `.exe`).
 7. Environment variables prefixed `MOONLIT_` (D16) are RUNTIME-only. They are read by the bootstrap, not by `moonlit build`. Setting any of them while invoking the build is silently ignored.
+8. `--gc-keep-latest` and `--gc-grace` only stamp `env.json.gc` and are independent of the output shape (`.pyz`, `--windows-exe`, `--bundle-python`). They are accepted alongside `--no-gc` (stamped but inert at runtime since `gc.enabled` is false); this is not a contradiction and does not exit 2.
 
 ## 4. Order of preflight checks
 
