@@ -14,7 +14,7 @@ repo_name = "OpenAfterHours/moonlit"
 # Surfaced in the top-right header next to the repo link via
 # overrides/partials/source.html.
 [project.extra]
-version = "0.5.0"
+version = "0.5.1"
 
 # nav is explicit so the spec's intended ordering is preserved (CLAUDE.md
 # initial docs scope: index → getting-started → cli-reference → runtime).
