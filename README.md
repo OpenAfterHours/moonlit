@@ -52,6 +52,24 @@ python ./shouter.pyz
 
 The produced `.pyz` is self-contained in the dependency sense: `uv.lock`'s entire dependency closure is bundled, plus the target's own wheel. On first run it extracts `site-packages/` to a per-build cache (`%LOCALAPPDATA%\moonlit` on Windows, `~/.moonlit` on POSIX); subsequent runs hit the cache directly without unpacking. Like [shiv](https://github.com/linkedin/shiv), the `.pyz`/`.exe` does **not** bundle the Python interpreter itself — recipients still need a Python on `PATH` (or a `py.exe`-discoverable install on Windows) whose `major.minor` matches the build's target ABI. See [Cross-interpreter builds](#cross-interpreter-builds) for how to control that target.
 
+### Pack PyPI packages directly (no project)
+
+No local project? Bundle straight from PyPI with `moonlit pack` — the analogue of `uvx --with <extra> <tool>`. Hand it package names; get back a `.pyz` a recipient can run with neither uv nor PyPI access:
+
+```sh
+# Bundle the `mooring` tool plus `polars`, then run it offline.
+uv run moonlit pack mooring --with polars -o mooring.pyz
+python ./mooring.pyz        # runs mooring's console script; polars is bundled in
+```
+
+With no `-e`/`-c`, `pack` defaults to the console script named after the primary package (just like `uvx mooring`). Pass `-e module:callable` to choose a different entry point, or bundle from an existing requirements file:
+
+```sh
+uv run moonlit pack --with-requirements requirements.txt --name mooring -c mooring -o mooring.pyz
+```
+
+`pack` needs no `pyproject.toml` or `uv.lock`: it resolves the full closure with `uv pip compile` at build time (that resolution *is* the lock for the artifact) and installs it with `--no-deps`. It accepts the same output-shape flags as `build` — `--python-version`, `--windows-exe`, `--bundle-python`, `--gc*`. Because there's no lockfile, repeated packs can pick newer pins as the index moves; pin exact versions (or pass a fully-pinned `--with-requirements` file) when you need reproducible inputs. See the [`moonlit pack` reference](https://openafterhours.github.io/moonlit/cli-reference/#moonlit-pack).
+
 ### Cross-interpreter builds
 
 Native-extension wheels (e.g. `msgspec`, `numpy`, `pydantic-core`) carry `cp<X><Y>` ABI tags and only load on the matching Python `major.minor`. By default `moonlit build` targets the build host's interpreter; pass `--python-version <X.Y>` to target a different one — useful when the dev box runs a different Python than the recipients:
@@ -167,6 +185,7 @@ tests/
 |---|---|
 | Build single-package projects | done |
 | Build uv workspaces with transitive deps | done |
+| `moonlit pack` — bundle PyPI packages with no local project (`uvx`/shiv-style) | done |
 | `--entry-point` (`-e`) and `--console-script` (`-c`) | done |
 | Atomic `.pyz` output (temp-then-rename) | done |
 | First-run extraction + cache-hit fast path | done |

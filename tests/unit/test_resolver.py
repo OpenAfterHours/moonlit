@@ -16,6 +16,7 @@ import pytest
 
 from moonlit import resolver
 from moonlit.errors import (
+    CompileError,
     ExportError,
     InternalError,
     NoLockfileError,
@@ -188,6 +189,101 @@ def test_export_appends_python_when_version_set(fake_run: _FakeRun, tmp_path: Pa
 def test_export_omits_python_by_default(fake_run: _FakeRun, tmp_path: Path) -> None:
     resolver.export(tmp_path, tmp_path / "r.txt")
     assert "--python" not in fake_run.calls[0][0]
+
+
+# ---------- compile_requirements (pack, D25) ----------
+
+
+def test_compile_requirements_argv_single_src(fake_run: _FakeRun, tmp_path: Path) -> None:
+    src = tmp_path / "requirements.in"
+    out = tmp_path / "requirements.txt"
+    resolver.compile_requirements(tmp_path, [src], out)
+    assert fake_run.calls[0][0] == [
+        "uv",
+        "pip",
+        "compile",
+        str(src),
+        "--output-file",
+        str(out),
+    ]
+
+
+def test_compile_requirements_argv_multiple_srcs_in_order(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    a = tmp_path / "requirements.in"
+    b = tmp_path / "extra.txt"
+    out = tmp_path / "requirements.txt"
+    resolver.compile_requirements(tmp_path, [a, b], out)
+    argv = fake_run.calls[0][0]
+    # Source files appear in the given order, before --output-file.
+    assert argv[:3] == ["uv", "pip", "compile"]
+    assert argv[3] == str(a)
+    assert argv[4] == str(b)
+    assert argv[argv.index("--output-file") + 1] == str(out)
+
+
+def test_compile_requirements_appends_python_version_when_set(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    # D20/D25b: uv pip compile resolves for the target version via
+    # --python-version (the resolution-target flag; markers + wheel selection).
+    src = tmp_path / "requirements.in"
+    out = tmp_path / "requirements.txt"
+    resolver.compile_requirements(tmp_path, [src], out, python_version="3.12")
+    argv = fake_run.calls[0][0]
+    assert "--python-version" in argv
+    assert argv[argv.index("--python-version") + 1] == "3.12"
+
+
+def test_compile_requirements_omits_python_version_by_default(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    resolver.compile_requirements(tmp_path, [tmp_path / "r.in"], tmp_path / "r.txt")
+    assert "--python-version" not in fake_run.calls[0][0]
+
+
+def test_compile_requirements_uses_pinned_subprocess_kwargs(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    resolver.compile_requirements(tmp_path, [tmp_path / "r.in"], tmp_path / "r.txt")
+    _, kwargs = fake_run.calls[0]
+    assert kwargs["shell"] is False
+    assert kwargs["check"] is False
+    assert kwargs["capture_output"] is True
+    assert kwargs["text"] is True
+    assert kwargs["cwd"] == tmp_path
+    assert kwargs["env"] is not os.environ
+    assert kwargs["env"] == dict(os.environ)
+
+
+def test_compile_requirements_uv_binary_missing_raises_uv_not_found(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    fake_run.raises = FileNotFoundError(2, "No such file: 'uv'")
+    with pytest.raises(UvNotFoundError):
+        resolver.compile_requirements(tmp_path, [tmp_path / "r.in"], tmp_path / "r.txt")
+
+
+def test_compile_requirements_failure_raises_compile_error(
+    fake_run: _FakeRun, tmp_path: Path
+) -> None:
+    fake_run.returncode = 1
+    fake_run.stderr = "error: No solution found when resolving dependencies"
+    with pytest.raises(CompileError, match="No solution found"):
+        resolver.compile_requirements(tmp_path, [tmp_path / "r.in"], tmp_path / "r.txt")
+
+
+def test_compile_requirements_success_returns_none(fake_run: _FakeRun, tmp_path: Path) -> None:
+    assert resolver.compile_requirements(tmp_path, [tmp_path / "r.in"], tmp_path / "r.txt") is None
+
+
+def test_compile_requirements_verbose_echoes_argv(
+    fake_run: _FakeRun, tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    resolver.compile_requirements(tmp_path, [tmp_path / "r.in"], tmp_path / "r.txt", verbosity=1)
+    err = capsys.readouterr().err
+    assert err.startswith("+ uv pip compile ")
 
 
 # ---------- pip_install_target ----------

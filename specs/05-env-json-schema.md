@@ -39,7 +39,7 @@ PEP508_NAME = re.compile(
     re.IGNORECASE,
 )
 ```
-The `re.IGNORECASE` flag is mandatory. Without it, all-lowercase names (e.g. `myapp`) are rejected — a bug. The value stored here is **raw** (D5): `env.json.name` is the value as authored in `[project].name`. **Consumers who need a normalized form perform the normalization themselves** — the bootstrap normalizes `name` per D5 (`re.sub(r"[-_.]+", "-", name).lower()`) when building the cache key (see `specs/04-cache-layout.md`). `ensure_ascii=False` permits non-ASCII names; homograph risk is accepted in v1.
+The `re.IGNORECASE` flag is mandatory. Without it, all-lowercase names (e.g. `myapp`) are rejected — a bug. The value stored here is **raw** (D5): `env.json.name` is the value as authored in `[project].name` (for `moonlit build`), or the `--name`/`SPEC`-derived name (for `moonlit pack`, D25d). **Consumers who need a normalized form perform the normalization themselves** — the bootstrap normalizes `name` per D5 (`re.sub(r"[-_.]+", "-", name).lower()`) when building the cache key (see `specs/04-cache-layout.md`). `ensure_ascii=False` permits non-ASCII names; homograph risk is accepted in v1.
 
 3.3 `build_id` — `re.fullmatch(r"[0-9a-f]{64}", v)`. Producer recipe is `hashlib.sha256(...).hexdigest()`, which yields lowercase hex.
 

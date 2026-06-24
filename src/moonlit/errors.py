@@ -57,6 +57,15 @@ class ExportError(MoonlitError):
     exit_code = 8
 
 
+class CompileError(MoonlitError):
+    """``moonlit pack`` resolution failure: ``uv pip compile`` exited non-zero
+    (D25f). Shares exit code 8 with :class:`ExportError` — both are
+    resolution-stage failures — but keeps a distinct class name so the
+    ``<ClassName>: <message>`` line tells the user which front half failed."""
+
+    exit_code = 8
+
+
 class StagingError(MoonlitError):
     exit_code = 9
 

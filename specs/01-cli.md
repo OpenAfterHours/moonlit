@@ -22,7 +22,7 @@ moonlit [--version | -V] [--help | -h] <subcommand> [args...]
 - No subcommand and no flag → top-level help to stderr, exit 2.
 - Unknown subcommand (with or without `--help`) → `error: no such subcommand: <name>` on stderr, exit 2. (Deliberate: `--help` does not redeem an unknown subcommand; that would mask typos.)
 
-v0.1 defined exactly one subcommand: `build`. v0.2 adds `info`. v0.3 adds `clean`.
+v0.1 defined exactly one subcommand: `build`. v0.2 adds `info`. v0.3 adds `clean`. v0.6 adds `pack`.
 
 ### 2.2 `moonlit build`
 
@@ -156,9 +156,58 @@ orphan  myapp.tmp.4  —         3d    1.2 MiB    <cache_root>/.myapp_....tmp.4
 
 **Stability**: the existence of the `clean` subcommand is stable from 0.3 onward. Flag spellings (`--all`, `--older-than`, `--keep-latest`, `--name`, `--force`, `--dry-run`, `--show-sizes`) are stable. The trailer format (`deleted N entries, freed …`) is stable. The table column layout MAY change in 0.x; consumers wanting machine-readable output should rely on the trailer's grammar, not the table.
 
+### 2.5 `moonlit pack`
+
+```
+moonlit pack [SPEC] [flags]
+```
+
+Build a `.pyz` (or `--windows-exe` / `--bundle-python` shape) directly from PyPI requirement specs and/or requirements files — **no local `pyproject.toml` or `uv.lock` required** (D25). This is the analogue of `uvx --with <extra> <tool>`: a recipient with neither uv nor PyPI access can run the produced artifact. `pack` resolves the dependency closure at build time with `uv pip compile` (D25b) and stages it; `build` remains the command for a local uv-managed project.
+
+`SPEC` is an optional positional — the *primary* package requirement, in PEP 508 form (`mooring`, `mooring==1.4`, `mooring[extra]>=1`, `mooring @ https://…`). It seeds both the default name (D25d) and the default entry point (D25e).
+
+| Short | Long | Type | Default | Required | Description |
+|-------|------|------|---------|----------|-------------|
+|       | `--with` | string (repeatable) | none | no | Additional package spec to include in the bundle (mirrors `uvx --with`). May be given multiple times. |
+| `-r` | `--with-requirements` | path (repeatable) | none | no | A requirements file whose pins are included in the bundle. May be given multiple times. |
+| `-e` | `--entry-point` | `module:callable` | none | one-of {-e, -c}* | Entry point baked into `env.json`. |
+| `-c` | `--console-script` | string | none | one-of {-e, -c}* | Console-script name; resolved against staged `*.dist-info/entry_points.txt`. |
+|       | `--name` | string | derived from `SPEC` | conditional | `env.json.name` (drives the cache key). Required when no positional `SPEC` is given (D25d). Must satisfy the PEP 508 name regex (D11). |
+| `-o` | `--output-file` | path | none | yes | Destination. `.pyz` (default), `.exe` (`--windows-exe`), or a directory (`--bundle-python`). Same rules as `build`. |
+| `-p` | `--python` | string | `/usr/bin/env python3` | no | Shebang line; same semantics and `--windows-exe`/`--python-version` pivots as `build` (D19c/D20d). |
+|       | `--python-version` | string | none (build host's) | no | Target Python `major.minor` for cross-interpreter resolution + install (D20). Threaded into `uv pip compile --python-version` and `uv pip install --python`. Format `^\d+\.\d+$`. |
+|       | `--windows-exe` | flag | false | no | Native Windows `.exe` shape (D19). Requires `-o` to end in `.exe` unless `--bundle-python` is also set. |
+|       | `--bundle-python` | flag | false | no | Self-contained directory bundle shipping a managed CPython (D21). `-o` names a directory; MUST NOT end in `.exe`/`.pyz`. |
+|       | `--force` | flag | false | no | Overwrite an existing regular-file output (or a recognized bundle directory under `--bundle-python`). Same as `build`. |
+|       | `--gc` / `--no-gc` | flag | `--gc` (on) | no | Bake runtime cache self-GC (D24). Same as `build`. |
+|       | `--gc-keep-latest` | int | `2` | no | Retention count (≥ 1; `< 1` → exit 2). Same as `build`. |
+|       | `--gc-grace` | duration | `24h` | no | Age grace (`<int><s\|m\|h\|d>`). Malformed → exit 2. Same as `build`. |
+| `-q` | `--quiet` | flag | false | no | Suppress non-error stderr. |
+| `-v` | `--verbose` | flag | false | no | Echo `uv` invocations; show tracebacks on errors. |
+|       | `--help` / `-h` | flag | — | no | Print pack help to stdout, exit 0. Short-circuits all validation. |
+
+`*` Exactly one of `-e`/`-c` is required, **except** when a positional `SPEC` is present and neither is given — then `pack` defaults to `-c <name-derived-from-SPEC>` (D25e), resolving the console script named after the primary package, exactly as `uvx <tool>` would run it. Passing both `-e` and `-c` → exit 2.
+
+`pack` does NOT accept `--package`, `--dev`, or `--no-dev` (no workspace, no dependency groups; D25g).
+
+**pack-specific validation order** (first failure short-circuits; mirrors §4 but without the project/lockfile steps):
+
+1. Click parsing (unknown flag, missing `-o`, both `-e`/`-c`, `-q`+`-v`, malformed `--gc-grace`, `--gc-keep-latest` < 1) → exit 2.
+2. Source presence: at least one of `SPEC`, `--with`, `--with-requirements` → else exit 2 with `error: moonlit pack requires a package argument, --with, or --with-requirements`.
+3. Name resolution: `--name` else derived from `SPEC`; if neither yields a name → exit 2 with `error: --name is required when no package argument is given`. A `--name` that fails the PEP 508 regex → exit 2.
+4. Entry-point resolution: apply the `-e`/`-c` rule above; if neither is set and there is no positional `SPEC` → exit 2.
+5. `--entry-point` syntactic validity (when set) → exit 6.
+6. `uv` on `PATH` → exit 3.
+7. Output-path preflight (§5) → exit 7.
+8. Pipeline: `uv pip compile` → exit 8 (`CompileError`); `uv pip install --target` → exit 9; console-script resolution → exit 6; bundled-Python → exit 13.
+
+**Output**: identical to `build` (§8) — progress on stderr, `wrote <output> (<bytes_humanized>, <N> entries)` on stdout.
+
+**Stability**: the existence of the `pack` subcommand is stable from 0.6 onward. Flag spellings (`--with`, `--with-requirements`, `--name`, `-e`, `-c`, `-o`) are stable; the entry-point default (D25e) is stable. The compiled-pin determinism caveat (D25b) is documented, not a contract.
+
 ## 3. Flag interaction rules
 
-1. Exactly one of `-e`, `-c` is required. Neither or both → exit 2.
+1. Exactly one of `-e`, `-c` is required. Neither or both → exit 2. (`pack` relaxes "neither" to the D25e default when a positional `SPEC` is present.)
 2. `-q` and `-v` are mutually exclusive. Both (including the combined form `-qv`) → exit 2.
 3. `--no-dev` and `--dev` are mutually exclusive. Both → exit 2.
 4. `--package` requirement is determined by parsing PROJECT's `pyproject.toml`; presence/absence of `[tool.uv.workspace]` is authoritative. Mismatch → exit 5.
@@ -218,7 +267,7 @@ This table mirrors D3 exactly. Runtime exit codes are independent (see `specs/03
 | 5 | Workspace shape mismatch / pyproject malformed | `NotAWorkspaceError`, `UnknownPackageError`, `MissingPackageError`, `MalformedPyprojectError` |
 | 6 | Entry-point resolution failed | `BadEntryPointError`, `ConsoleScriptNotFoundError` |
 | 7 | Output path issue | `OutputExistsError`, `OutputNotWritableError` |
-| 8 | `uv export` failure | `ExportError` |
+| 8 | `uv export` (build) or `uv pip compile` (pack) failure | `ExportError`, `CompileError` |
 | 9 | `uv pip install --target` failure | `StagingError` |
 | 10 | `uv build` wheel failure or wheel artifact issue | `WheelArtifactError` |
 | 11 | Internal invariant violation | `InternalError` |
@@ -279,6 +328,10 @@ Every invariant has a CLI-observable falsifier (no need to inspect the produced 
 - **I11b: `--bundle-python` zipapp parity (D21).** In `--bundle-python` mode the produced `<basename>.pyz` (inside the bundle directory) byte-equals — at the zip-entry level — what a non-bundle build of the same project + same other flags would produce as its single `.pyz` output. Falsifier: build twice, one with `--bundle-python` and one without; open `<out>/<basename>.pyz` and `<out>.pyz` respectively as `zipfile.ZipFile`, diff the namelists (must match exactly) and `read(name)` for each entry (must match for every entry, including `env.json`).
 - **I12: `--windows-exe` suffix rule (D19b).** Falsifier: `moonlit build --windows-exe -e a:b -o app.pyz` → exit 2 with a usage message naming `.exe`.
 - **I13: `--bundle-python` rejects `.exe` / `.pyz` suffix on `-o` (D21b).** Falsifier: `moonlit build --bundle-python -e a:b -o app.exe` → exit 2 with a usage message explaining the output is a directory; same for `-o app.pyz`. A bare directory path (with no extension or any other extension) is accepted.
+- **I14: `pack` needs no project (D25).** Falsifier: in a directory with no `pyproject.toml` and no `uv.lock`, `moonlit pack somepkg -o x.pyz` does NOT exit 4 or 5 on those grounds; it proceeds to `uv pip compile` (and may exit 8 only if resolution itself fails).
+- **I15: `pack` source-presence rule (D25a).** Falsifier: `moonlit pack -o x.pyz -e m:f` with no `SPEC`, `--with`, or `--with-requirements` → exit 2 with the source-required message.
+- **I16: `pack` entry-point default (D25e).** Falsifier: `moonlit pack mooring -o x.pyz` (no `-e`/`-c`) behaves as if `-c mooring` was passed — the build either succeeds resolving the `mooring` console script or fails with `ConsoleScriptNotFoundError` (exit 6), never with the "exactly one of -e/-c" usage error.
+- **I17: `pack` name without positional (D25d).** Falsifier: `moonlit pack --with-requirements r.txt -e m:f -o x.pyz` with no `SPEC` and no `--name` → exit 2 demanding `--name`.
 
 ## 12. Stability
 

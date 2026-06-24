@@ -98,6 +98,37 @@ In both modes the **zip body is the same**: site-packages → _bootstrap → __m
 
 **Step 10 — Tempdir cleanup.** Tempdir from D17 is removed in the `finally` of `builder.build`.
 
+## 3b. The `pack` pipeline (project-less, D25)
+
+`moonlit.builder.pack(PackConfig)` builds an artifact from PyPI requirement specs with no local project. It shares the **back half** (entry-point resolution, `build_id`, bundled-Python, archive assembly) with `build` — the divergence is entirely in the resolution **front half**.
+
+`PackConfig` (frozen dataclass): `specs: tuple[str, ...]`, `requirement_files: tuple[Path, ...]`, `name: str`, `output_path: Path`, `entry_point: str | None`, `console_script: str | None`, `python_shebang: str`, `force: bool`, `verbosity: int`, `windows_exe: bool = False`, `python_version: str | None = None`, `bundle_python: bool = False`, `gc_enabled: bool = True`, `gc_keep_latest: int = 2`, `gc_grace_seconds: int = 86400`. Exactly one of `entry_point`/`console_script` is set (the CLI applies the D25e default before constructing `PackConfig`). At least one of `specs`/`requirement_files` is non-empty (CLI-enforced; the builder raises `InternalError` if both are empty). `name` must satisfy the PEP 508 name regex (D11).
+
+**Pack-step 1 — Synthesize `requirements.in`.** Write `<tempdir>/requirements.in` with one line per entry of `PackConfig.specs` (UTF-8, LF). When `specs` is empty (requirements-files-only build) the `.in` file is still created but empty — `uv pip compile` accepts it as one input among the `requirement_files`.
+
+**Pack-step 2 — `uv pip compile`** (`resolver.compile_requirements`, `cwd = <tempdir>`):
+```
+uv pip compile <tempdir>/requirements.in [<requirement_files>...] --output-file <tempdir>/requirements.txt [--python-version <X.Y>]
+```
+`--python-version <X.Y>` is appended when `PackConfig.python_version` is set, so the closure is resolved for the target interpreter (markers/wheel selection at resolution time; D20/D25b). The output is the full transitive closure, fully pinned. `FileNotFoundError` for `uv` → `UvNotFoundError` (3). Any non-zero exit → `CompileError` (8) with the prefixed `uv` stderr.
+
+**Pack-step 3 — Stage the closure** (`resolver.pip_install_target`, `cwd = <tempdir>`):
+```
+uv pip install --target <staging>/site-packages --no-deps --requirement <tempdir>/requirements.txt --python {<X.Y> | <sys.executable>}
+```
+Identical to build's step 4 (D25b keeps `--no-deps` — `compile` already produced the closure). Non-zero → `StagingError` (9).
+
+**Pack-step 4 — Shared back half.** From here `pack` and `build` are identical, operating on `<staging>/site-packages/` with a synthetic target whose `name` is `PackConfig.name`:
+- Step 7 — console-script resolution (only if `console_script` is set), §3 step 7.
+- Step 8 — `compute_build_id` (§4).
+- Step 8.5 — bundled-Python install (only if `bundle_python`), §3 step 8.5.
+- Step 9 — archive assembly (§3 step 9; same single-file / folder-bundle dispatch).
+- Step 10 — tempdir cleanup in `finally`.
+
+`pack` has **no** workspace detection (step 1), target selection (step 2), `uv export` (step 3), or `uv build --wheel`/wheel install (steps 5–6). The primary package is just another resolved dependency in the `--no-deps` install (D25c).
+
+`resolver.compile_requirements(cwd, src_files, output_file, *, python_version=None, verbosity=0)` is the only addition to the resolver's public surface and the only new `uv` shell-out. It uses the same pinned `subprocess.run` kwargs (`shell=False, check=False, capture_output=True, env=os.environ.copy(), text=True`) and the same `+ uv <argv>` verbose echo as the other resolver functions.
+
 ## 4. Build-id computation
 
 `hashing.compute_build_id(site_packages_root)` excludes any path containing a `__pycache__` segment and any path with extension `.pyc` (D6).
@@ -140,6 +171,7 @@ Two builds with the same uv version, Python interpreter (major.minor.patch), `uv
 | Console script absent or ambiguous | `ConsoleScriptNotFoundError` | 6 |
 | Output exists / parent missing / not a regular file | `OutputExistsError`, `OutputNotWritableError` | 7 |
 | `uv export` non-zero (other than NoLockfile) | `ExportError` | 8 |
+| `uv pip compile` non-zero (pack, D25) | `CompileError` | 8 |
 | `uv pip install --target` non-zero (Step 4 or any Step 6 wheel) | `StagingError` | 9 |
 | `uv build` non-zero, zero wheels, or metadata mismatch | `WheelArtifactError` | 10 |
 | Internal invariant violation | `InternalError` | 11 |
