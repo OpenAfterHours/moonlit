@@ -28,8 +28,9 @@ from . import __version__
 from . import clean as clean_module
 from ._bootstrap import environment as bootstrap_env
 from ._bootstrap.errors import EnvJsonError as _BootstrapEnvJsonError
-from .builder import BuildConfig, humanize_bytes
+from .builder import BuildConfig, PackConfig, humanize_bytes
 from .builder import build as run_build
+from .builder import pack as run_pack
 from .errors import (
     BadArchiveError,
     MalformedPyprojectError,
@@ -285,6 +286,212 @@ def build_cmd(
 
 
 @cli.command(
+    name="pack",
+    context_settings={"help_option_names": ["-h", "--help"]},
+)
+@click.argument("spec", required=False, default=None)
+@click.option(
+    "--with",
+    "with_specs",
+    multiple=True,
+    metavar="SPEC",
+    help="Additional package spec to bundle (repeatable; mirrors `uvx --with`).",
+)
+@click.option(
+    "-r",
+    "--with-requirements",
+    "with_requirements",
+    multiple=True,
+    type=click.Path(),
+    metavar="FILE",
+    help="Requirements file whose pins are bundled (repeatable).",
+)
+@click.option(
+    "-e",
+    "--entry-point",
+    "entry_point",
+    default=None,
+    help="Entry point baked into env.json (module:callable).",
+)
+@click.option(
+    "-c",
+    "--console-script",
+    "console_script",
+    default=None,
+    help="Console-script name resolved from staged dist-info.",
+)
+@click.option(
+    "--name",
+    "name_override",
+    default=None,
+    help="env.json name (cache key). Required when no package argument is given.",
+)
+@click.option(
+    "-o",
+    "--output-file",
+    "output_file",
+    required=True,
+    type=click.Path(),
+    help="Destination path. .pyz/.exe for single-file modes; directory for --bundle-python.",
+)
+@click.option(
+    "-p",
+    "--python",
+    "python_shebang",
+    default="/usr/bin/env python3",
+    help="Shebang line baked into env.json and prefixed to the .pyz.",
+)
+@click.option(
+    "--python-version",
+    "python_version",
+    default=None,
+    help="Target Python major.minor for cross-interpreter resolution (e.g. 3.12).",
+)
+@click.option(
+    "--windows-exe",
+    "windows_exe",
+    is_flag=True,
+    default=False,
+    help="Produce a native Windows .exe (launcher + zipapp) instead of a .pyz.",
+)
+@click.option(
+    "--bundle-python",
+    "bundle_python",
+    is_flag=True,
+    default=False,
+    help=(
+        "Produce a self-contained directory bundle (launcher.exe + .pyz + _python/). "
+        "-o names the output directory; it MUST NOT end in .exe or .pyz. See D21."
+    ),
+)
+@click.option(
+    "--force",
+    "force",
+    is_flag=True,
+    default=False,
+    help="Overwrite an existing regular-file output.",
+)
+@click.option(
+    "--gc/--no-gc",
+    "gc_enabled",
+    default=True,
+    help="Bake in runtime cache self-GC (default on). See D24.",
+)
+@click.option(
+    "--gc-keep-latest",
+    "gc_keep_latest",
+    type=int,
+    default=2,
+    help="How many newest cache entries of this app to retain (>= 1; default 2).",
+)
+@click.option(
+    "--gc-grace",
+    "gc_grace",
+    default=None,
+    help="Only reap cache entries older than this (e.g. 30m, 24h, 7d). Default 24h.",
+)
+@click.option("-q", "--quiet", "quiet", is_flag=True, default=False)
+@click.option("-v", "--verbose", "verbose", is_flag=True, default=False)
+@click.pass_context
+def pack_cmd(
+    ctx: click.Context,
+    spec: str | None,
+    with_specs: tuple[str, ...],
+    with_requirements: tuple[str, ...],
+    entry_point: str | None,
+    console_script: str | None,
+    name_override: str | None,
+    output_file: str,
+    python_shebang: str,
+    python_version: str | None,
+    windows_exe: bool,
+    bundle_python: bool,
+    force: bool,
+    gc_enabled: bool,
+    gc_keep_latest: int,
+    gc_grace: str | None,
+    quiet: bool,
+    verbose: bool,
+) -> None:
+    """Build a self-contained .pyz from PyPI packages (no local project; D25)."""
+    # spec §2.5 step 1: parser-level usage errors.
+    if quiet and verbose:
+        raise click.UsageError("--quiet and --verbose are mutually exclusive")
+    if entry_point is not None and console_script is not None:
+        raise click.UsageError("exactly one of --entry-point/-e or --console-script/-c is required")
+
+    # spec §2.5 step 2: at least one dependency source.
+    if spec is None and not with_specs and not with_requirements:
+        raise click.UsageError(
+            "moonlit pack requires a package argument, --with, or --with-requirements"
+        )
+
+    # spec §2.5 step 3: resolve and validate the name (D25d).
+    derived_name = _derive_req_name(spec) if spec is not None else None
+    name = name_override if name_override is not None else derived_name
+    if name is None:
+        raise click.UsageError("--name is required when no package argument is given")
+    if not _PEP508_NAME_RE.fullmatch(name):
+        raise click.UsageError(f"invalid distribution name {name!r}; pass a valid --name")
+
+    # spec §2.5 step 4: entry-point resolution with the D25e default.
+    if entry_point is None and console_script is None:
+        if derived_name is None:
+            raise click.UsageError(
+                "could not derive a console script from the package argument; "
+                "pass --entry-point/-e or --console-script/-c"
+            )
+        console_script = derived_name
+
+    gc_grace_seconds = _resolve_gc_grace_seconds(gc_keep_latest, gc_grace)
+
+    # Output-shape suffix rules + shebang pivot — identical to `build` (D19/D20/D21).
+    if bundle_python:
+        lower = output_file.lower()
+        if lower.endswith(".exe") or lower.endswith(".pyz"):
+            raise click.UsageError(
+                "--bundle-python output is a directory; --output-file MUST NOT end in .exe or .pyz"
+            )
+    elif windows_exe and not output_file.lower().endswith(".exe"):
+        raise click.UsageError("--windows-exe requires --output-file to end in .exe")
+    if python_version is not None:
+        _validate_python_version(python_version)
+    if (
+        windows_exe
+        and ctx.get_parameter_source("python_shebang") == click.core.ParameterSource.DEFAULT
+    ):
+        python_shebang = f"py -{python_version}" if python_version is not None else "python.exe"
+    _validate_shebang(python_shebang)
+
+    # spec §2.5 step 6: uv on PATH (exit 3). No project dir / lockfile checks (D25).
+    if shutil.which("uv") is None:
+        raise UvNotFoundError("uv binary not found on PATH")
+
+    specs = tuple(s for s in ([spec] if spec is not None else []) + list(with_specs))
+    requirement_files = tuple(Path(p).resolve(strict=False) for p in with_requirements)
+    output_path = Path(output_file).resolve(strict=False)
+    verbosity = 1 if verbose else (-1 if quiet else 0)
+    config = PackConfig(
+        specs=specs,
+        requirement_files=requirement_files,
+        name=name,
+        output_path=output_path,
+        entry_point=entry_point,
+        console_script=console_script,
+        python_shebang=python_shebang,
+        force=force,
+        verbosity=verbosity,
+        windows_exe=windows_exe,
+        python_version=python_version,
+        bundle_python=bundle_python,
+        gc_enabled=gc_enabled,
+        gc_keep_latest=gc_keep_latest,
+        gc_grace_seconds=gc_grace_seconds,
+    )
+    sys.exit(run_pack(config))
+
+
+@cli.command(
     name="info",
     context_settings={"help_option_names": ["-h", "--help"]},
 )
@@ -517,6 +724,27 @@ def _validate_python_version(value: str) -> None:
     """D20: --python-version must be major.minor only (matches cp<X><Y> ABI tag)."""
     if not _PYTHON_VERSION_RE.fullmatch(value):
         raise click.UsageError(f"--python-version must be major.minor (e.g. 3.12); got {value!r}")
+
+
+# Mirrors `_PEP508_NAME_RE` in src/moonlit/builder.py (and the env.json producer
+# regex in specs/05). Duplicated here — rather than imported from the build-time
+# module — so the CLI's accept-set for `pack --name`/derived names is pinned by
+# the same literal regardless of import direction. `re.IGNORECASE` is mandatory
+# (D11): without it all-lowercase names are rejected.
+_PEP508_NAME_RE = re.compile(r"^([A-Z0-9]|[A-Z0-9][A-Z0-9._-]*[A-Z0-9])$", re.IGNORECASE)
+
+# Leading PEP 508 distribution name of a requirement spec, used to derive the
+# default name + console script for `moonlit pack` (D25d/D25e). Stops at the
+# first version specifier / extras bracket / marker / `@`-url character.
+_REQ_NAME_RE = re.compile(r"^\s*([A-Za-z0-9][A-Za-z0-9._-]*)")
+
+
+def _derive_req_name(spec: str) -> str | None:
+    """Return the distribution name at the head of a requirement spec, or None
+    when the spec does not begin with a PEP 508 name (e.g. a bare URL/VCS spec,
+    for which the user must pass --name and -e/-c explicitly)."""
+    match = _REQ_NAME_RE.match(spec)
+    return match.group(1) if match else None
 
 
 _GC_DEFAULT_GRACE_SECONDS = 86400  # 24h; mirrors BuildConfig.gc_grace_seconds default.

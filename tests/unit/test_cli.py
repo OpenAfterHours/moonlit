@@ -1588,3 +1588,271 @@ def test_gc_grace_malformed_is_usage_error(
         "build", str(project_root), "--gc-grace", "nope", "-e", "myapp:main", "-o", str(out)
     )
     assert code == 2
+
+
+# ---------- §2.5 moonlit pack (D25) ----------
+
+
+def _capture_pack(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
+    """Stub run_pack so we can inspect the PackConfig the CLI assembles
+    without running the resolver pipeline."""
+    captured: dict[str, Any] = {}
+
+    def capture(config: Any) -> int:
+        captured["config"] = config
+        return 0
+
+    monkeypatch.setattr(cli_module, "run_pack", capture)
+    return captured
+
+
+def _run_pack(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], *args: str
+) -> tuple[int, Any, str, str]:
+    captured = _capture_pack(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["moonlit", "pack", *args])
+    code = 0
+    try:
+        cli_module.main()
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 0
+    out = capsys.readouterr()
+    return code, captured.get("config"), out.out, out.err
+
+
+def test_pack_help_exit_0(call_cli: Any) -> None:
+    code, stdout, _ = call_cli("pack", "--help")
+    assert code == 0
+    assert "Usage" in stdout
+
+
+def test_pack_no_source_exit_2(call_cli: Any, tmp_path: Path) -> None:
+    # I15: needs a SPEC, --with, or --with-requirements.
+    code, _, stderr = call_cli("pack", "-e", "m:f", "-o", str(tmp_path / "x.pyz"))
+    assert code == 2
+    assert "--with" in stderr
+
+
+def test_pack_default_entry_point_is_console_script_from_spec(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    # I16 / D25e: `pack mooring` defaults to `-c mooring`.
+    code, config, _, _ = _run_pack(
+        monkeypatch, capsys, "mooring", "-o", str(tmp_path / "mooring.pyz")
+    )
+    assert code == 0
+    assert config.console_script == "mooring"
+    assert config.entry_point is None
+    assert config.name == "mooring"
+    assert config.specs == ("mooring",)
+
+
+def test_pack_with_specs_extend_the_closure(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    code, config, _, _ = _run_pack(
+        monkeypatch,
+        capsys,
+        "mooring",
+        "--with",
+        "polars",
+        "--with",
+        "rich>=13",
+        "-o",
+        str(tmp_path / "mooring.pyz"),
+    )
+    assert code == 0
+    assert config.specs == ("mooring", "polars", "rich>=13")
+    # Default console script still derives from the primary spec.
+    assert config.console_script == "mooring"
+
+
+def test_pack_with_requirements_files(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    reqs = tmp_path / "requirements.txt"
+    reqs.write_text("rich\n", encoding="utf-8")
+    code, config, _, _ = _run_pack(
+        monkeypatch,
+        capsys,
+        "mooring",
+        "--with-requirements",
+        str(reqs),
+        "-c",
+        "mooring",
+        "-o",
+        str(tmp_path / "mooring.pyz"),
+    )
+    assert code == 0
+    assert tuple(Path(p) for p in config.requirement_files) == (reqs,)
+
+
+def test_pack_with_requirements_short_flag_r(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    reqs = tmp_path / "requirements.txt"
+    reqs.write_text("mooring\n", encoding="utf-8")
+    code, config, _, _ = _run_pack(
+        monkeypatch,
+        capsys,
+        "mooring",
+        "-r",
+        str(reqs),
+        "-o",
+        str(tmp_path / "mooring.pyz"),
+    )
+    assert code == 0
+    assert tuple(Path(p) for p in config.requirement_files) == (reqs,)
+
+
+def test_pack_requirements_only_requires_name(call_cli: Any, tmp_path: Path) -> None:
+    # I17 / D25d: no positional SPEC and no --name → must demand --name.
+    reqs = tmp_path / "requirements.txt"
+    reqs.write_text("mooring\n", encoding="utf-8")
+    code, _, stderr = call_cli(
+        "pack",
+        "--with-requirements",
+        str(reqs),
+        "-e",
+        "mooring.cli:main",
+        "-o",
+        str(tmp_path / "x.pyz"),
+    )
+    assert code == 2
+    assert "--name" in stderr
+
+
+def test_pack_requirements_only_with_name_succeeds(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    reqs = tmp_path / "requirements.txt"
+    reqs.write_text("mooring\n", encoding="utf-8")
+    code, config, _, _ = _run_pack(
+        monkeypatch,
+        capsys,
+        "--with-requirements",
+        str(reqs),
+        "--name",
+        "mooring",
+        "-e",
+        "mooring.cli:main",
+        "-o",
+        str(tmp_path / "x.pyz"),
+    )
+    assert code == 0
+    assert config.name == "mooring"
+    assert config.specs == ()
+
+
+def test_pack_name_override_keeps_spec_derived_console_default(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    # --name sets env.json name; the default console script still comes from SPEC.
+    code, config, _, _ = _run_pack(
+        monkeypatch, capsys, "mooring", "--name", "cooltool", "-o", str(tmp_path / "x.pyz")
+    )
+    assert code == 0
+    assert config.name == "cooltool"
+    assert config.console_script == "mooring"
+
+
+def test_pack_explicit_entry_point_overrides_default(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    code, config, _, _ = _run_pack(
+        monkeypatch, capsys, "mooring", "-e", "mooring.app:run", "-o", str(tmp_path / "x.pyz")
+    )
+    assert code == 0
+    assert config.entry_point == "mooring.app:run"
+    assert config.console_script is None
+
+
+def test_pack_both_e_and_c_exit_2(call_cli: Any, tmp_path: Path) -> None:
+    code, _, _ = call_cli(
+        "pack", "mooring", "-e", "m:f", "-c", "mooring", "-o", str(tmp_path / "x.pyz")
+    )
+    assert code == 2
+
+
+def test_pack_quiet_and_verbose_exit_2(call_cli: Any, tmp_path: Path) -> None:
+    code, _, stderr = call_cli("pack", "mooring", "-q", "-v", "-o", str(tmp_path / "x.pyz"))
+    assert code == 2
+    assert "mutually exclusive" in stderr
+
+
+def test_pack_derives_name_from_versioned_spec(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    code, config, _, _ = _run_pack(
+        monkeypatch, capsys, "mooring==1.4", "-o", str(tmp_path / "x.pyz")
+    )
+    assert code == 0
+    assert config.name == "mooring"
+    assert config.console_script == "mooring"
+    assert config.specs == ("mooring==1.4",)
+
+
+def test_pack_invalid_name_exit_2(call_cli: Any, tmp_path: Path) -> None:
+    code, _, stderr = call_cli(
+        "pack", "mooring", "--name", "not a name", "-e", "m:f", "-o", str(tmp_path / "x.pyz")
+    )
+    assert code == 2
+    assert "--name" in stderr
+
+
+def test_pack_windows_exe_requires_exe_suffix(call_cli: Any, tmp_path: Path) -> None:
+    code, _, stderr = call_cli("pack", "mooring", "--windows-exe", "-o", str(tmp_path / "x.pyz"))
+    assert code == 2
+    assert ".exe" in stderr
+
+
+def test_pack_bundle_python_rejects_pyz_suffix(call_cli: Any, tmp_path: Path) -> None:
+    code, _, stderr = call_cli("pack", "mooring", "--bundle-python", "-o", str(tmp_path / "x.pyz"))
+    assert code == 2
+    assert "directory" in stderr
+
+
+def test_pack_threads_flags_into_config(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    code, config, _, _ = _run_pack(
+        monkeypatch,
+        capsys,
+        "mooring",
+        "--python-version",
+        "3.12",
+        "--force",
+        "--no-gc",
+        "--gc-keep-latest",
+        "5",
+        "--gc-grace",
+        "30m",
+        "-o",
+        str(tmp_path / "x.pyz"),
+    )
+    assert code == 0
+    assert config.python_version == "3.12"
+    assert config.force is True
+    assert config.gc_enabled is False
+    assert config.gc_keep_latest == 5
+    assert config.gc_grace_seconds == 1800
+
+
+def test_pack_uv_not_on_path_exit_3(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str], tmp_path: Path
+) -> None:
+    real_which = shutil.which
+    monkeypatch.setattr(
+        shutil,
+        "which",
+        lambda name, *a, **k: None if name == "uv" else real_which(name, *a, **k),
+    )
+    # run_pack stubbed so we only exercise the CLI uv-on-PATH preflight.
+    _capture_pack(monkeypatch)
+    monkeypatch.setattr(sys, "argv", ["moonlit", "pack", "mooring", "-o", str(tmp_path / "x.pyz")])
+    code = 0
+    try:
+        cli_module.main()
+    except SystemExit as exc:
+        code = exc.code if isinstance(exc.code, int) else 0
+    assert code == 3

@@ -1,12 +1,19 @@
-"""Build pipeline orchestrator (specs/02-build-pipeline.md §3).
+"""Build pipeline orchestrator (specs/02-build-pipeline.md §3 / §3b).
 
-Coordinates the 10-step build pipeline: workspace detection, target
-selection, ``uv`` subprocess steps via :mod:`moonlit.resolver`, console-script
-resolution, build-id computation, and archive assembly under the D17 tempdir
-+ D15 atomic-rename protocol. The actual zip contents are written by
-:func:`_create_archive`; in pass 1 that function is a placeholder that
-emits a minimal valid pyz so the pipeline is end-to-end testable, and pass
-2 replaces it with the full assembly per spec 02 §3 step 9.
+Two public entry points share one back half:
+
+- :func:`build` — the 10-step pipeline for a local uv project: workspace
+  detection, target selection, ``uv export``/``build`` subprocess steps via
+  :mod:`moonlit.resolver`, console-script resolution, build-id computation, and
+  archive assembly under the D17 tempdir + D15 atomic-rename protocol.
+- :func:`pack` — the project-less front half (D25): synthesize a
+  ``requirements.in`` from PyPI specs, ``uv pip compile`` (the resolution is
+  the lock), ``uv pip install --target --no-deps``, then the identical back
+  half. No ``pyproject.toml``/``uv.lock`` and no ``uv build`` wheel step.
+
+The shared back half (entry-point resolution → build-id → bundled-Python →
+``env.json`` → archive write) lives in :func:`_assemble_artifact`; the zip
+contents are written by :func:`_create_archive`.
 """
 
 import configparser
@@ -83,6 +90,36 @@ class BuildConfig:
 
 
 @dataclass(frozen=True)
+class PackConfig:
+    """Per spec 02 §3b / D25. Project-less PyPI packing.
+
+    ``specs`` are PyPI requirement strings (the positional + every ``--with``);
+    ``requirement_files`` are ``--with-requirements`` files. At least one of the
+    two is non-empty. ``name`` is the resolved ``env.json.name`` (``--name`` or
+    derived from the primary spec, D25d). Exactly one of
+    ``entry_point``/``console_script`` is set — the CLI applies the D25e default
+    before constructing this. The remaining fields mirror :class:`BuildConfig`
+    and feed the shared back half (:func:`_assemble_artifact`) identically.
+    """
+
+    specs: tuple[str, ...]
+    requirement_files: tuple[Path, ...]
+    name: str
+    output_path: Path
+    entry_point: str | None
+    console_script: str | None
+    python_shebang: str
+    force: bool
+    verbosity: int
+    windows_exe: bool = False
+    python_version: str | None = None
+    bundle_python: bool = False
+    gc_enabled: bool = True
+    gc_keep_latest: int = 2
+    gc_grace_seconds: int = 86400
+
+
+@dataclass(frozen=True)
 class _Target:
     """Resolved target for the build: raw [project].name + member directory."""
 
@@ -100,6 +137,10 @@ class _BundledPython:
 
 
 _ENTRY_POINT_SIDE_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*(\.[A-Za-z_][A-Za-z0-9_]*)*$")
+
+# PEP 508 distribution name (D11), used to validate `pack`'s resolved name so a
+# malformed env.json.name can never ship. `re.IGNORECASE` is mandatory (D11).
+_PEP508_NAME_RE = re.compile(r"^([A-Z0-9]|[A-Z0-9][A-Z0-9._-]*[A-Z0-9])$", re.IGNORECASE)
 
 
 def build(config: BuildConfig) -> int:
@@ -121,6 +162,28 @@ def build(config: BuildConfig) -> int:
     tempdir = tempfile.mkdtemp(prefix="moonlit-build-")
     try:
         return _run_pipeline(config, workspace_obj, target, Path(tempdir))
+    finally:
+        shutil.rmtree(tempdir, ignore_errors=True)
+
+
+def pack(config: PackConfig) -> int:
+    """Run the project-less pack pipeline (spec 02 §3b / D25); return 0 on success.
+
+    Resolves a dependency closure from PyPI requirement specs via
+    ``uv pip compile`` (no local project), stages it, and assembles the artifact
+    through the same back half as :func:`build`. On failure raises a
+    :class:`MoonlitError` subclass for the CLI to translate.
+    """
+    _validate_pack_config(config)
+    if config.entry_point is not None:
+        _validate_entry_point_string(config.entry_point)
+    _validate_pack_name(config.name)
+    _preflight_output(config)
+
+    target = _Target(name=config.name, directory=config.output_path.parent)
+    tempdir = tempfile.mkdtemp(prefix="moonlit-build-")
+    try:
+        return _run_pack_pipeline(config, target, Path(tempdir))
     finally:
         shutil.rmtree(tempdir, ignore_errors=True)
 
@@ -183,7 +246,7 @@ def _validate_entry_point_string(value: str) -> None:
         raise BadEntryPointError(f"invalid entry point: {value}")
 
 
-def _preflight_output(config: BuildConfig) -> None:
+def _preflight_output(config: BuildConfig | PackConfig) -> None:
     output_path = config.output_path.resolve(strict=False)
     parent = output_path.parent
     if not parent.is_dir():
@@ -306,6 +369,27 @@ def _run_pipeline(
             )
         step.set_result(f"installed · {len(wheels)} wheel{'s' if len(wheels) != 1 else ''}")
 
+    return _assemble_artifact(config, staging, target, tmp_root, total_start)
+
+
+def _assemble_artifact(
+    config: BuildConfig | PackConfig,
+    staging: Path,
+    target: _Target,
+    tmp_root: Path,
+    total_start: float,
+) -> int:
+    """The back half shared by ``build`` and ``pack`` (spec 02 §3 steps 7-10).
+
+    Operates purely on the already-staged ``<staging>/site-packages/`` tree:
+    resolve the entry point, compute the cache-key ``build_id``, optionally
+    install a bundled Python (D21), render ``env.json``, and write the archive
+    atomically. Knows nothing about how the tree was staged — ``build`` got it
+    from a local lockfile + wheel, ``pack`` from ``uv pip compile`` (D25).
+    """
+    site_packages = staging / "site-packages"
+    verbosity = config.verbosity
+
     with Step("resolving entry point", verbosity=verbosity) as step:
         entry_point = _resolve_entry_point(config, site_packages)
         step.set_result(f"entry · {entry_point}")
@@ -343,6 +427,74 @@ def _run_pipeline(
 
     _print_success_line(config.output_path, entry_count)
     return 0
+
+
+# ---------- pack helpers, in pack()'s call order (spec 02 §3b / D25) ----------
+
+
+def _validate_pack_config(config: PackConfig) -> None:
+    if (config.entry_point is None) == (config.console_script is None):
+        raise InternalError("PackConfig must have exactly one of entry_point or console_script")
+    if not config.specs and not config.requirement_files:
+        raise InternalError("PackConfig requires at least one of specs or requirement_files")
+
+
+def _validate_pack_name(name: str) -> None:
+    """D25d: the resolved name must satisfy the env.json PEP 508 name regex
+    (D11) so a malformed ``env.json.name`` can never ship. The CLI validates a
+    user-supplied ``--name`` as a usage error; reaching here with a bad name is
+    a CLI bug, hence :class:`InternalError`.
+    """
+    if not _PEP508_NAME_RE.fullmatch(name):
+        raise InternalError(f"invalid pack name (not a PEP 508 name): {name!r}")
+
+
+def _run_pack_pipeline(config: PackConfig, target: _Target, tmp_root: Path) -> int:
+    staging = tmp_root / "staging"
+    site_packages = staging / "site-packages"
+    site_packages.mkdir(parents=True)
+    req_in = tmp_root / "requirements.in"
+    req_txt = tmp_root / "requirements.txt"
+    verbosity = config.verbosity
+    total_start = time.perf_counter()
+
+    # Pack-step 1 (D25a): the positional + every `--with` spec become a
+    # synthetic requirements.in; the `--with-requirements` files follow it.
+    _write_requirements_in(req_in, config.specs)
+    src_files = [req_in, *config.requirement_files]
+
+    with Step("resolving dependencies (uv pip compile)", verbosity=verbosity) as step:
+        resolver.compile_requirements(
+            tmp_root,
+            src_files,
+            req_txt,
+            python_version=config.python_version,
+            verbosity=verbosity,
+        )
+        n_reqs = _count_requirements(req_txt)
+        step.set_result(f"resolved · {n_reqs} packages")
+
+    with Step("installing dependencies into staging", verbosity=verbosity) as step:
+        # D25b: --no-deps — the compiled file is already the full closure.
+        resolver.pip_install_target(
+            tmp_root,
+            site_packages,
+            requirement=req_txt,
+            python_version=config.python_version,
+            verbosity=verbosity,
+        )
+        step.set_result(f"installed · {n_reqs} packages")
+
+    return _assemble_artifact(config, staging, target, tmp_root, total_start)
+
+
+def _write_requirements_in(path: Path, specs: tuple[str, ...]) -> None:
+    """Pack-step 1 (D25a): one requirement spec per line (LF, UTF-8). Written
+    empty when there are no positional/``--with`` specs (a
+    ``--with-requirements``-only build), in which case it is a harmless empty
+    input alongside the user's requirements files.
+    """
+    path.write_text("".join(f"{spec}\n" for spec in specs), encoding="utf-8")
 
 
 def _count_requirements(req_path: Path) -> int:
@@ -390,7 +542,7 @@ def _read_wheel_metadata_name(wheel: Path) -> str:
     raise WheelArtifactError(f"could not find Name in wheel METADATA: {wheel}")
 
 
-def _resolve_entry_point(config: BuildConfig, site_packages: Path) -> str:
+def _resolve_entry_point(config: BuildConfig | PackConfig, site_packages: Path) -> str:
     if config.entry_point is not None:
         return config.entry_point
     name = config.console_script
@@ -427,7 +579,7 @@ def _resolve_entry_point(config: BuildConfig, site_packages: Path) -> str:
     return value
 
 
-def _install_bundled_python(config: BuildConfig, tmp_root: Path) -> _BundledPython:
+def _install_bundled_python(config: BuildConfig | PackConfig, tmp_root: Path) -> _BundledPython:
     """Run step 8.5 (D21): install Python into the build tempdir, locate
     ``python.exe`` at its dist root. The dist tree is copied verbatim into the
     output folder's ``_python/`` subdirectory at archive-assembly time.
@@ -446,7 +598,7 @@ def _build_env_dict(
     target: _Target,
     build_id: str,
     entry_point: str,
-    config: BuildConfig,
+    config: BuildConfig | PackConfig,
 ) -> dict:
     # Note (D21h): env.json is byte-identical between bundle and non-bundle
     # builds (modulo built_at). The bundle's "ships its own Python" state is
@@ -480,7 +632,7 @@ def _build_env_dict(
 
 
 def _write_archive_atomically(
-    config: BuildConfig,
+    config: BuildConfig | PackConfig,
     staging: Path,
     env_dict: dict,
 ) -> int:
@@ -511,7 +663,7 @@ def _write_archive_atomically(
 
 
 def _write_bundle_atomically(
-    config: BuildConfig,
+    config: BuildConfig | PackConfig,
     staging: Path,
     env_dict: dict,
     bundled: _BundledPython,

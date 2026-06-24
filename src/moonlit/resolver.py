@@ -1,8 +1,10 @@
 """The only module that calls ``subprocess.run(['uv', ...])``.
 
-Each public function corresponds to one step of the build pipeline
-(specs/02-build-pipeline.md §3): ``export`` (step 3), ``pip_install_target``
-(steps 4 and 6), ``build_wheel`` (step 5). All ``subprocess.run`` invocations
+Each public function corresponds to one step of a build pipeline
+(specs/02-build-pipeline.md §3 / §3b): ``export`` (build step 3),
+``compile_requirements`` (pack resolution, D25b), ``pip_install_target``
+(steps 4 and 6), ``build_wheel`` (step 5), ``python_install`` (step 8.5).
+All ``subprocess.run`` invocations
 use the pinned kwargs ``shell=False, check=False, capture_output=True,
 env=os.environ.copy()``; argv is constructed only inside this module.
 
@@ -21,6 +23,7 @@ from pathlib import Path
 
 from . import _progress
 from .errors import (
+    CompileError,
     ExportError,
     InternalError,
     NoLockfileError,
@@ -82,6 +85,46 @@ def export(
     if re.search(r"out.of.date|frozen", stderr, re.IGNORECASE):
         raise ExportError("uv.lock is out of date with pyproject.toml; run `uv lock` and retry.")
     raise ExportError(f"uv export failed: {stderr.strip()}")
+
+
+def compile_requirements(
+    cwd: Path,
+    src_files: list[Path],
+    output_file: Path,
+    *,
+    python_version: str | None = None,
+    verbosity: int = 0,
+) -> None:
+    """Run ``uv pip compile`` to resolve a frozen requirements file (pack
+    front half, D25b). There is no ``uv.lock`` — this resolution IS the lock.
+
+    ``src_files`` are the inputs in order (the synthesized ``requirements.in``
+    of ``--with`` specs first, then any ``--with-requirements`` files). The
+    output is the full, pinned transitive closure, so the subsequent
+    ``uv pip install --target --no-deps`` must not re-resolve.
+
+    When ``python_version`` is set (e.g. ``"3.12"``), pass it through as
+    ``--python-version <X.Y>`` so the closure is resolved for that interpreter
+    (marker evaluation + wheel selection at resolution time, D20/D25b). Unlike
+    ``export``/``build``, ``uv pip compile`` *does* accept ``--python-version``
+    and that is the correct resolution-target flag here.
+
+    Errors:
+
+    * ``UvNotFoundError`` if the ``uv`` binary is not on PATH.
+    * ``CompileError`` (exit 8) on any non-zero ``uv`` exit, carrying the
+      prefixed stderr (e.g. "No solution found when resolving dependencies").
+    """
+    argv = ["uv", "pip", "compile"]
+    argv += [str(src) for src in src_files]
+    argv += ["--output-file", str(output_file)]
+    if python_version is not None:
+        argv += ["--python-version", python_version]
+
+    proc = _run_uv(argv, cwd=cwd, verbosity=verbosity)
+    if proc.returncode != 0:
+        stderr = (proc.stderr or "").strip()
+        raise CompileError(f"uv pip compile failed: {stderr}")
 
 
 def pip_install_target(

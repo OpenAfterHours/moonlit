@@ -54,6 +54,17 @@ from _bootstrap import bootstrap
 sys.exit(bootstrap())
 ```
 
+### `moonlit pack` — project-less PyPI packing (D25)
+
+`cli.pack` → `builder.pack(PackConfig)` builds an artifact from PyPI requirement specs with **no local project** (the `uvx --with X tool` / shiv use case). It shares the back half with `build` — only the resolution front half differs:
+
+1. Synthesize `<tmp>/requirements.in` from the positional `SPEC` + every `--with` spec (one per line).
+2. `uv pip compile <requirements.in> [--with-requirements files] --output-file <reqs.txt> [--python-version X.Y]` — **this resolution is the lock** (there is no `uv.lock`). Lives in `resolver.compile_requirements` (the only new `uv` shell-out).
+3. `uv pip install --target <staging>/site-packages --no-deps -r <reqs.txt>` — `--no-deps` preserved; compile already produced the full closure.
+4. Then the **shared back half** in `builder._assemble_artifact` (entry-point resolution → `compute_build_id` → bundled-Python → `env.json` → archive), identical to `build`. No `uv build` wheel step.
+
+`env.json.name` comes from `--name` or is derived from the primary `SPEC`'s PEP 508 name (D25d); the entry point defaults to `-c <derived-name>` when neither `-e`/`-c` is given and a `SPEC` is present (D25e). `CompileError` (exit 8, shares the code with `ExportError`) maps a `uv pip compile` failure. The produced `.pyz` is byte-structurally identical to a `build` output — the bootstrap is unaware of `pack` vs `build`.
+
 ## Development practices
 
 **Test-driven development.** The specs in `specs/` already enumerate falsifiable invariants, and many name explicit test files (e.g. `tests/unit/test_bootstrap_stdlib_only.py`, `tests/unit/test_builder_preflight.py::test_parent_missing_exits_7`). Workflow per change:

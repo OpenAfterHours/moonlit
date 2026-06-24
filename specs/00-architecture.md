@@ -61,7 +61,7 @@ Per module:
 - `__main__.py` — three-line shim so `python -m moonlit` invokes `cli.main`. Public surface: none beyond `if __name__ == "__main__": main()`.
 - `cli.py` — click command group and `build` subcommand. Imports `builder`, `errors`. Public surface: `main()` console-script entry. Catches `MoonlitError` subclasses and translates to the build-time exit codes in D3.
 - `builder.py` — orchestrates the build pipeline; assembles the zipapp; renders `__main__.py` for the produced .pyz from `_templates/main_py.tmpl`. Imports `resolver`, `workspace`, `hashing`, `errors`, and reads `_bootstrap/` and `_templates/` via `importlib.resources`. Public surface: `build(BuildConfig) -> int` — returns `0` (or another build-time exit code) on the success path; raises a `MoonlitError` subclass on failure for the CLI to translate.
-- `resolver.py` — the only module that calls `uv`. Imports `errors`, `subprocess`. Public surface: `export()`, `pip_install_target()`, `build_wheel()`.
+- `resolver.py` — the only module that calls `uv`. Imports `errors`, `subprocess`. Public surface: `export()`, `pip_install_target()`, `build_wheel()`, `python_install()`, `compile_requirements()` (the last for the project-less `pack` front half, D25).
 - `workspace.py` — parses `[tool.uv.workspace]` from `pyproject.toml`. Imports `errors`, `tomllib`. Public surface: `detect(project_root) -> Workspace | None`.
 - `hashing.py` — `compute_build_id(staging_root) -> str`. Imports `hashlib` only.
 - `errors.py` — leaf module; defines the `MoonlitError` hierarchy with stable `exit_code` attributes per D3. No internal imports.
@@ -101,6 +101,7 @@ A moonlit-built `.pyz` is structurally:
 ## 5. Lifecycle phases
 
 - **Phase A — Build.** Inputs: `pyproject.toml`, `uv.lock`, optionally `--package`. Process: `uv export` → `uv pip install --target` → `uv build --wheel` → install wheel → compute `build_id` (D6) → render `env.json` → assemble zip into `<output>.pyz.tmp.<pid>` in the same directory as `<output>.pyz` → fsync and close → `os.replace(<output>.pyz.tmp.<pid>, <output>.pyz)` (D15). On any failure the `.tmp.<pid>` file is unlinked in `finally`, so a crashed build never leaves a partial `.pyz` at the user-visible output path.
+- **Phase A′ — Pack (project-less, D25).** Inputs: PyPI requirement specs and/or requirements files — no `pyproject.toml`/`uv.lock`. Process: synthesize `requirements.in` → `uv pip compile` (the resolution is the lock) → `uv pip install --target --no-deps` → then the identical back half as Phase A (compute `build_id` → render `env.json` → atomic assemble). Skips `uv build --wheel` (no local package). See `specs/02-build-pipeline.md §3b`.
 - **Phase B — Distribute.** Out of moonlit's scope.
 - **Phase C — First run.** End user invokes `python app.pyz`. Bootstrap reads `env.json`, derives the cache key (D5), discovers no cache, acquires the D13 sentinel lock, extracts to a tempdir, atomically installs via the D4 protocol, releases the lock, sets up `sys.path`, invokes the entry point.
 - **Phase D — Subsequent run (cache hit).** Bootstrap reads `env.json`, derives the cache key, and takes the D14 unsynchronized fast path: if `site_dir.is_dir()` and `MOONLIT_FORCE_EXTRACT` is unset, **the lock is not acquired at all**; bootstrap proceeds directly to `addsitedir` and entry-point invocation. This is the steady-state path and is contention-free.

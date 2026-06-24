@@ -381,6 +381,43 @@ Every produced artifact's bootstrap automatically prunes **its own app's** stale
 
 **Scope.** Same-app, same-`MOONLIT_ROOT`. Cross-user shared cache roots could cross-reap, but that is already unsupported in the MVP (spec 04 §13.10). Phase 1 covers `.pyz`, single-file `--windows-exe`, and `--bundle-python` folders identically (all run the same bootstrap inside the `.pyz`).
 
+## D25 — Project-less PyPI packing (`moonlit pack`)
+
+`moonlit pack` builds a `.pyz`/`.exe`/folder-bundle from one or more **PyPI requirement specs** (and/or requirements files) with **no local uv project** — the analogue of `uvx --with <extra> <tool>` or `shiv -e mod:fn <pkgs>`. `moonlit build` is unchanged: it still requires `pyproject.toml` + `uv.lock` and builds the project's own wheel. `pack` and `build` are sibling front halves that share the same back half (entry-point resolution → `build_id` → `env.json` → archive assembly).
+
+**D25a — Sources.** A `pack` invocation draws its dependency set from up to three sources, unioned in this order:
+
+1. A single optional positional `SPEC` (the *primary* package, e.g. `mooring`, `mooring==1.4`, `mooring[extra]>=1`).
+2. Zero or more `--with <SPEC>` flags (additional package specs, repeatable — mirrors `uvx --with`).
+3. Zero or more `--with-requirements <FILE>` flags (`-r` alias, repeatable — existing requirements files).
+
+At least one source must be present (else CLI usage error, exit 2). The positional and every `--with` spec are written, one per line, into a synthetic `<tempdir>/requirements.in`; that file plus every `--with-requirements` file become the input file list for `uv pip compile`.
+
+**D25b — Compile-is-the-lock.** Because there is no `uv.lock`, resolution happens at build time and the resolved set IS the lock for that artifact:
+
+```
+uv pip compile <tempdir>/requirements.in <--with-requirements files...> --output-file <tempdir>/requirements.txt [--python-version <X.Y>]
+uv pip install --target <staging>/site-packages --no-deps --requirement <tempdir>/requirements.txt --python {<X.Y> | <sys.executable>}
+```
+
+`--no-deps` on the install is preserved (the invariant): `uv pip compile` emits the **full transitive closure**, so the install must not re-resolve. Determinism is conditioned on the same inputs as `build` (D6) plus the same package index state at compile time — a fresh resolution against a moved index may pick newer pins and therefore a different `build_id`. This is inherent to project-less packing and is the documented trade-off versus `build`'s frozen-lock determinism. The compiled `requirements.txt` lives only in the build tempdir; like `build`'s exported requirements it is NOT staged and does NOT feed `build_id`.
+
+**D25c — No `uv build`, no wheel step.** `pack` skips pipeline steps 5–6 (`uv build --wheel` + wheel install) entirely — there is no local package to build. The primary package reaches staging as an ordinary resolved dependency through the `--no-deps` install above. Workspace logic (D2) does not apply to `pack`.
+
+**D25d — `env.json.name` and the cache key.** `pack` has no `[project].name`, so the name is supplied:
+
+- `--name <NAME>` if given; else
+- derived from the positional `SPEC` by taking its PEP 508 distribution name (the leading `[A-Za-z0-9][A-Za-z0-9._-]*` before any extras/specifier/marker/`@`-url); else
+- (no positional and no `--name`) → CLI usage error, exit 2.
+
+The resolved name must match the env.json PEP 508 name regex (D11); it is stored **raw** in `env.json.name` (D5) and PEP-503-normalized for the cache key exactly as `build`'s name is. The bootstrap is unaware of `pack` vs `build` — the artifacts are byte-structurally identical.
+
+**D25e — Entry-point default.** `pack` keeps `build`'s "exactly one of `-e`/`-c`" rule with one ergonomic exception: when **neither** `-e` nor `-c` is given **and** a positional `SPEC` is present, `pack` defaults to `-c <derived-name>` (resolve the console script named after the primary package — exactly what `uvx <tool>` runs). Neither flag and no positional → CLI usage error, exit 2. Passing both → exit 2.
+
+**D25f — Error mapping.** A non-zero `uv pip compile` is `CompileError` (exit 8 — the resolution-failure code shared with `ExportError`; a distinct class name keeps the `<ClassName>: <message>` line legible). `uv` missing from PATH → `UvNotFoundError` (3). The install, entry-point, output-path, bundled-Python, and archive steps reuse `build`'s existing classes and codes unchanged (`StagingError` 9, `ConsoleScriptNotFoundError`/`BadEntryPointError` 6, `OutputExistsError`/`OutputNotWritableError` 7, `PythonBundleError` 13).
+
+**D25g — Flag parity.** `pack` accepts the full output-shaping flag set of `build` with identical semantics: `-o` (required), `-p/--python`, `--python-version` (D20), `--windows-exe` (D19), `--bundle-python` (D21), `--force`, `--gc/--no-gc`, `--gc-keep-latest`, `--gc-grace` (D24), `-q`/`-v`. These all operate on the shared back half, so no per-flag re-specification is needed — the `build` decisions govern. `pack` does NOT accept `--package`, `--dev`/`--no-dev` (no workspace, no dependency groups).
+
 ---
 
 These decisions are the binding contract for v2. Authors who deviate must explicitly justify why; otherwise apply them mechanically.

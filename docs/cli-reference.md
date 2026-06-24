@@ -15,7 +15,7 @@ moonlit [-V | --version] [-h | --help] <subcommand> [args...]
 
 Running `moonlit` with no subcommand and no flag prints the help to stderr and exits 2. Running `moonlit <unknown>` (with or without `--help`) prints `error: no such subcommand: <name>` to stderr and exits 2.
 
-Subcommands: [`build`](#moonlit-build) (produce a `.pyz`/`.exe`), [`info`](#moonlit-info) (inspect a built archive's `env.json`), and [`clean`](#moonlit-clean) (reap stale cache entries).
+Subcommands: [`build`](#moonlit-build) (produce a `.pyz`/`.exe` from a local uv project), [`pack`](#moonlit-pack) (produce one straight from PyPI packages — no project needed), [`info`](#moonlit-info) (inspect a built archive's `env.json`), and [`clean`](#moonlit-clean) (reap stale cache entries).
 
 ## `moonlit build`
 
@@ -169,6 +169,86 @@ dist/myapp/
 ```
 
 Distribute the folder (typically by zipping it) and run `myapp\myapp.exe`. The folder-bundle shape replaces the v0.3.0 single-`.exe` `--bundle-python` output, which tripped Windows Defender's ML heuristics for self-extracting archives. The new shape extracts nothing at runtime and so isn't flagged.
+
+## `moonlit pack`
+
+```
+moonlit pack [SPEC] [--with SPEC ...] [-r FILE ...] -e <entry> | -c <script> -o <output> [flags]
+```
+
+Build a `.pyz`/`.exe`/folder-bundle directly from **PyPI requirement specs** — with **no local `pyproject.toml` or `uv.lock`**. This is the moonlit analogue of `uvx --with <extra> <tool>` or `shiv -e mod:fn <pkgs>`: hand it package names, get back a self-contained artifact a recipient can run with neither uv nor PyPI access. `moonlit build` stays the command for your own uv-managed project; `pack` is for bundling things that already live on an index.
+
+`pack` resolves the full dependency closure at build time with `uv pip compile` — that resolution *is* the lock for the produced artifact (there is no `uv.lock` to freeze). It then installs the closure with `uv pip install --no-deps` and runs the same back half as `build` (entry-point resolution → `build_id` → `env.json` → archive). There is no `uv build` wheel step — every package, including the primary one, is just a resolved dependency.
+
+`SPEC` is an optional positional — the *primary* package in PEP 508 form (`mooring`, `mooring==1.4`, `mooring[extra]>=1`). It seeds both the default name and the default entry point.
+
+### Flags
+
+| Short | Long | Type | Required | Default | Description |
+|---|---|---|---|---|---|
+|  | `--with` | `SPEC` (repeatable) | no | — | Additional package to bundle (mirrors `uvx --with`). May be repeated. |
+| `-r` | `--with-requirements` | path (repeatable) | no | — | A requirements file whose pins are bundled. May be repeated. |
+| `-e` | `--entry-point` | `module:callable` | one-of `{-e, -c}`* | — | Entry point baked into `env.json`. |
+| `-c` | `--console-script` | string | one-of `{-e, -c}`* | — | Console-script name; resolved against staged `*.dist-info/entry_points.txt`. |
+|  | `--name` | string | conditional | derived from `SPEC` | `env.json` name (drives the cache key). **Required** when no positional `SPEC` is given. Must be a valid PEP 508 name. |
+| `-o` | `--output-file` | path | yes | — | Destination — same shapes as `build` (`.pyz`, `.exe` with `--windows-exe`, directory with `--bundle-python`). |
+| `-p` | `--python` | string | no | `/usr/bin/env python3` | Shebang line; same semantics and `--windows-exe`/`--python-version` pivots as `build`. |
+|  | `--python-version` | `<X.Y>` | no | build host's | Target Python `major.minor`; threaded into `uv pip compile --python-version` and `uv pip install --python`. |
+|  | `--windows-exe` | flag | no | off | Native Windows `.exe` shape. Requires `-o` to end in `.exe` (unless `--bundle-python`). |
+|  | `--bundle-python` | flag | no | off | Self-contained directory bundle shipping a managed CPython. `-o` is a directory; MUST NOT end in `.exe`/`.pyz`. |
+|  | `--force` | flag | no | off | Overwrite an existing regular-file output (or a recognized bundle dir). |
+|  | `--gc` / `--no-gc` | flag | no | `--gc` (on) | Bake runtime cache self-GC. Same as `build`. |
+|  | `--gc-keep-latest` | int | no | `2` | Retention count (≥ 1). Same as `build`. |
+|  | `--gc-grace` | duration | no | `24h` | Age grace. Same as `build`. |
+| `-q` | `--quiet` | flag | no | off | Suppress progress on stderr. |
+| `-v` | `--verbose` | flag | no | off | Echo `uv` invocations; tracebacks on error. |
+| `-h` | `--help` | flag | no | — | Print help, exit 0. |
+
+`*` Exactly one of `-e`/`-c` is required — **except** when a positional `SPEC` is present and you pass neither, in which case `pack` defaults to `-c <name-from-SPEC>` (resolve the console script named after the primary package, exactly as `uvx <tool>` would run it).
+
+`pack` does **not** accept `--package`, `--dev`, or `--no-dev` — there is no workspace and no dependency groups.
+
+### Flag interactions
+
+- At least one of `SPEC`, `--with`, `--with-requirements` must be present → else exit 2.
+- `--name` is required when there is no positional `SPEC` → else exit 2.
+- Both `-e` and `-c` → exit 2; neither (with no `SPEC` to default from) → exit 2.
+- `-q`+`-v`, the `--windows-exe`/`--bundle-python` suffix rules, and `--python-version` format are validated exactly as for `build`.
+
+### Exit codes
+
+Same enumeration as `build`, with one addition: a `uv pip compile` failure (e.g. an unsatisfiable resolution) is **exit 8** (`CompileError`) — the same resolution-failure code `build` uses for `ExportError`. The install (9), entry-point (6), output (7), and bundled-Python (13) codes are shared with `build` unchanged.
+
+### Determinism note
+
+Because there is no `uv.lock`, `pack` resolves fresh each time. Two packs of the same specs against a moved index may pick newer pins and therefore a different `build_id` (and a different cache key on recipients). If you need frozen, reproducible inputs, pin exact versions in your specs or pass a fully-pinned `--with-requirements` file.
+
+### Examples
+
+Bundle a PyPI tool plus an extra dependency (the `uvx --with polars mooring` case), then run it offline:
+
+```sh
+moonlit pack mooring --with polars -o mooring.pyz
+python mooring.pyz        # runs mooring's console script, polars bundled in
+```
+
+Pick the entry point explicitly instead of the console-script default:
+
+```sh
+moonlit pack mooring --with polars -e mooring.cli:main -o mooring.pyz
+```
+
+Bundle straight from an existing requirements file (shiv-style):
+
+```sh
+moonlit pack --with-requirements requirements.txt --name mooring -c mooring -o mooring.pyz
+```
+
+Pin a version and cross-compile for Python 3.12:
+
+```sh
+moonlit pack "mooring==1.4" --python-version 3.12 -o mooring-py312.pyz
+```
 
 ## `moonlit info`
 

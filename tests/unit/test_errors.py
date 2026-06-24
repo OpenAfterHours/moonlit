@@ -16,6 +16,7 @@ EXPECTED_EXIT_CODES: list[tuple[type["errors.MoonlitError"], int]] = [
     (errors.OutputExistsError, 7),
     (errors.OutputNotWritableError, 7),
     (errors.ExportError, 8),
+    (errors.CompileError, 8),
     (errors.StagingError, 9),
     (errors.WheelArtifactError, 10),
     (errors.InternalError, 11),
