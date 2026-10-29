@@ -33,10 +33,11 @@ jobs:
     name: Build sdist + wheel
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Install uv
-        uses: astral-sh/setup-uv@v3
+        # setup-uv publishes no major tags since v8; pin the exact release.
+        uses: astral-sh/setup-uv@v10.3.3
         with:
           enable-cache: true
           cache-dependency-glob: |
@@ -71,7 +72,7 @@ jobs:
         run: ls -la dist/
 
       - name: Upload dist/ as artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: dist
           path: dist/
@@ -95,7 +96,7 @@ jobs:
       id-token: write
     steps:
       - name: Download dist/ artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
@@ -111,14 +112,14 @@ jobs:
     permissions:
       contents: write    # required by `gh release create`
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
         with:
           # gh release create --generate-notes walks commit history; needs
           # the full clone, not the default shallow one.
           fetch-depth: 0
 
       - name: Download dist/ artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           name: dist
           path: dist/
