@@ -46,8 +46,8 @@ def _check_no_bootstrap_collision(site_dir: Path) -> None:
 def _activate_site_dir(site_dir: Path) -> None:
     # D26: addsitedir appends, which lets any host site dir shadow a bundled
     # distribution. Detach the host tail (from the bundle slot on) while it runs:
-    # site_dir and whatever the bundle's .pth files add then land ahead of every
-    # host site dir, and their `import` lines never see one.
+    # site_dir and whatever the bundle's .pth files add then land ahead of that
+    # tail, and their `import` lines never see it.
     snapshot = list(sys.path)
     slot = _bundle_slot(snapshot)
     host_tail = sys.path[slot:]
@@ -55,7 +55,7 @@ def _activate_site_dir(site_dir: Path) -> None:
     try:
         site.addsitedir(str(site_dir))
     finally:
-        sys.path[:] = [*_gather_bundle_block(sys.path, snapshot), *host_tail]
+        sys.path[:] = [*_gather_bundle_block(sys.path, snapshot, slot), *host_tail]
 
 
 def _bundle_slot(entries: list[str]) -> int:
@@ -78,7 +78,7 @@ def _host_site_dirs() -> set[str]:
 
 
 def _stdlib_index(normalized: list[str | None]) -> int:
-    # os is frozen in release builds, so os.__file__ is {sys._stdlib_dir}/os.py
+    # os is frozen by default, so os.__file__ is {sys._stdlib_dir}/os.py
     # and a PYTHONPATH copy can't respell it. When that dir isn't on sys.path
     # (e.g. the Windows embeddable distro), -1 makes the host search start at 0.
     os_file = getattr(os, "__file__", None)
@@ -99,11 +99,14 @@ def _normalize(path: str) -> str:
     return os.path.realpath(path)
 
 
-def _gather_bundle_block(head: list[str], snapshot: list[str]) -> list[str]:
+def _gather_bundle_block(head: list[str], snapshot: list[str], slot: int) -> list[str]:
     # Entries new since the snapshot form the block, in their relative order,
-    # wherever a bundled .pth `import` line inserted them (even index 0). List
-    # membership, not a set: host startup code can leave unhashable junk here.
-    kept = [entry for entry in head if entry in snapshot]
+    # wherever a bundled .pth `import` line inserted them (even index 0). A host
+    # tail entry that bundled .pth code re-added is dropped: the tail comes back
+    # behind the block anyway. List membership, not a set: host startup code can
+    # leave unhashable junk here.
+    ahead = snapshot[:slot]
+    kept = [entry for entry in head if entry in ahead]
     block = [entry for entry in head if entry not in snapshot]
     return [*kept, *block]
 

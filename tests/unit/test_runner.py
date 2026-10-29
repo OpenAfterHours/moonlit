@@ -555,6 +555,33 @@ def test_bundled_pth_removing_the_stdlib_entry_cannot_lift_the_bundle(
     assert sys.path[-1] == str(site_dir)
 
 
+def test_bundled_pth_naming_a_host_site_dir_cannot_lift_it_ahead(
+    tmp_path: Path, host_site: Path
+) -> None:
+    # The host tail is detached while the bundle's .pth files run, so addsitedir's
+    # dedupe can't see it and re-adds the dir; that copy must not outrank the bundle.
+    ahead = sys.path[: sys.path.index(str(host_site))]
+    site_dir = make_site_dir(tmp_path)
+    (site_dir / "host.pth").write_text(f"{host_site}\n", encoding="utf-8")
+    write_module(site_dir, "mymod_host_pth", "def main():\n    return 0\n")
+    run(make_env("mymod_host_pth:main"), site_dir)
+    assert sys.path == [*ahead, str(site_dir), str(host_site)]
+
+
+def test_interrupt_during_pth_processing_restores_the_host_tail(
+    tmp_path: Path, host_site: Path
+) -> None:
+    # site.py swallows Exception from a .pth line but not KeyboardInterrupt; the
+    # detached host tail must still come back.
+    ahead = sys.path[: sys.path.index(str(host_site))]
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "kbi_mod", "raise KeyboardInterrupt\n")
+    (site_dir / "kbi.pth").write_text("import kbi_mod\n", encoding="utf-8")
+    with pytest.raises(KeyboardInterrupt):
+        run(make_env("anything:main"), site_dir)
+    assert sys.path == [*ahead, str(site_dir), str(host_site)]
+
+
 # ---------- exit-code attributes ----------
 
 

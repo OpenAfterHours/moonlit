@@ -26,7 +26,7 @@ The bootstrap then:
 4. Computes a cache key from the `[project].name` and the build_id.
 5. Resolves the cache root (see below).
 6. Either takes the **fast path** (cache hit, no lock) or the **slow path** (acquire lock, extract to tempdir, atomically install, release lock).
-7. Calls `site.addsitedir(<cache>/<key>/site-packages)` (which processes its `.pth` files) with the interpreter's own site-packages dirs briefly taken off `sys.path`, then puts them back behind it. The staged tree, plus anything its `.pth` files add, ends up just ahead of the interpreter's site-packages (never ahead of the standard library), so the bundled dependencies win over any installed copies. See [Import precedence](#import-precedence).
+7. Calls `site.addsitedir(<cache>/<key>/site-packages)` (which processes its `.pth` files) with the interpreter's own site-packages dirs that follow the standard library briefly taken off `sys.path`, then puts them back behind it. The staged tree, plus anything its `.pth` files add, ends up just ahead of the interpreter's site-packages (never ahead of the standard library), so the bundled dependencies win over any installed copies. See [Import precedence](#import-precedence).
 8. Resolves the entry point string (or its `MOONLIT_ENTRY_POINT` override), imports the module, walks the attribute path, calls `obj()`.
 9. Coerces the return value: `None` → 0, `int` → masked `& 0xFF`, otherwise `int(result) & 0xFF` (or exit 2 if uncoercible).
 
