@@ -58,12 +58,6 @@ def host_site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     return host
 
 
-def stdlib_index() -> int:
-    """Index of the real stdlib dir (where os.py lives) on this process's sys.path."""
-    stdlib = os.path.normcase(os.path.dirname(os.__file__))
-    return next(i for i, entry in enumerate(sys.path) if os.path.normcase(entry) == stdlib)
-
-
 def make_env(entry_point: str) -> Environment:
     return Environment(
         schema_version=1,
@@ -377,6 +371,32 @@ def test_host_site_dir_match_is_path_normalized(
     assert sys.path.index(str(site_dir)) == sys.path.index(str(host_site)) - 1
 
 
+@pytest.mark.skipif(os.name == "nt", reason="POSIX resolves symlinks; Windows folds case")
+def test_symlinked_host_site_dir_spelling_matches(
+    tmp_path: Path, host_site: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # Homebrew's sitecustomize respells the site dir through a symlink, so sys.path
+    # and site.getsitepackages() name the same directory differently.
+    link = tmp_path / "linked-site-packages"
+    link.symlink_to(host_site, target_is_directory=True)
+    monkeypatch.setattr(site, "getsitepackages", lambda: [str(link)])
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "mymod_symlink", "def main():\n    return 0\n")
+    run(make_env("mymod_symlink:main"), site_dir)
+    assert sys.path.index(str(site_dir)) == sys.path.index(str(host_site)) - 1
+
+
+@pytest.mark.skipif(os.name != "nt", reason="case-insensitive paths are a Windows concern")
+def test_host_site_dir_match_ignores_case_on_windows(
+    tmp_path: Path, host_site: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(site, "getsitepackages", lambda: [str(host_site).upper()])
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "mymod_case", "def main():\n    return 0\n")
+    run(make_env("mymod_case:main"), site_dir)
+    assert sys.path.index(str(site_dir)) == sys.path.index(str(host_site)) - 1
+
+
 def test_pth_added_dir_travels_with_site_dir(tmp_path: Path, host_site: Path) -> None:
     site_dir = make_site_dir(tmp_path)
     (site_dir / "extra").mkdir()
@@ -440,7 +460,9 @@ def test_host_site_dir_ahead_of_stdlib_is_not_the_anchor(tmp_path: Path, host_si
     site_dir = make_site_dir(tmp_path)
     write_module(site_dir, "mymod_stdlib", "def main():\n    return 0\n")
     run(make_env("mymod_stdlib:main"), site_dir)
-    assert sys.path.index(str(site_dir)) > stdlib_index()
+    # No host site dir follows the stdlib, so the bundle goes last: behind the
+    # stdlib and lib-dynload alike.
+    assert sys.path[-1] == str(site_dir)
 
 
 def test_stdlib_not_on_sys_path_searches_from_the_start(
@@ -470,9 +492,8 @@ def test_os_without_file_searches_from_the_start(
 def test_bundled_pth_import_line_resolves_against_the_bundle(
     tmp_path: Path, host_site: Path
 ) -> None:
-    # Bundled .pth `import` lines run inside addsitedir, so site_dir must already sit
-    # ahead of the host dirs by then. This also pins that the .pth is still
-    # processed when site_dir is already on sys.path.
+    # Bundled .pth `import` lines run inside addsitedir, so the host site dirs must
+    # already be out of sight by then.
     write_module(host_site, "pth_helper", "")
     site_dir = make_site_dir(tmp_path)
     write_module(site_dir, "pth_helper", "")
@@ -490,6 +511,48 @@ def test_non_str_sys_path_entry_is_skipped(tmp_path: Path, host_site: Path) -> N
     write_module(site_dir, "mymod_junk", "def main():\n    return 0\n")
     run(make_env("mymod_junk:main"), site_dir)
     assert sys.path.index(str(site_dir)) == sys.path.index(str(host_site)) - 1
+
+
+def test_unhashable_sys_path_entry_is_tolerated(tmp_path: Path, host_site: Path) -> None:
+    sys.path.insert(sys.path.index(str(host_site)), cast(Any, ["junk"]))
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "mymod_unhashable", "def main():\n    return 0\n")
+    run(make_env("mymod_unhashable:main"), site_dir)
+    assert sys.path.index(str(site_dir)) == sys.path.index(str(host_site)) - 1
+
+
+def test_bundled_pth_import_line_sees_dirs_its_path_lines_added(
+    tmp_path: Path, host_site: Path
+) -> None:
+    # pywin32's pywin32.pth pattern: path lines add bundled subdirs, then an import
+    # line imports from one of them. A host copy must not be visible at that point.
+    write_module(host_site, "pw_boot", "")
+    site_dir = make_site_dir(tmp_path)
+    (site_dir / "sub").mkdir()
+    write_module(site_dir / "sub", "pw_boot", "")
+    (site_dir / "x.pth").write_text("sub\nimport pw_boot\n", encoding="utf-8")
+    write_module(site_dir, "mymod_pw", "def main():\n    return 0\n")
+    run(make_env("mymod_pw:main"), site_dir)
+    assert sys.modules["pw_boot"].__file__ == str(site_dir / "sub" / "pw_boot.py")
+
+
+def test_bundled_pth_removing_the_stdlib_entry_cannot_lift_the_bundle(
+    tmp_path: Path, host_site: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The slot is fixed before addsitedir runs; a .pth that drops the stdlib entry
+    # must not turn a PYTHONPATH-listed host site dir into the anchor afterwards.
+    stdlib = tmp_path / "stdlib"
+    stdlib.mkdir()
+    monkeypatch.setattr(os, "__file__", str(stdlib / "os.py"))
+    sys.path.remove(str(host_site))
+    sys.path[1:1] = [str(host_site), str(stdlib)]
+    site_dir = make_site_dir(tmp_path)
+    (site_dir / "drop.pth").write_text(
+        f"import sys; sys.path.remove({str(stdlib)!r})\n", encoding="utf-8"
+    )
+    write_module(site_dir, "mymod_drop", "def main():\n    return 0\n")
+    run(make_env("mymod_drop:main"), site_dir)
+    assert sys.path[-1] == str(site_dir)
 
 
 # ---------- exit-code attributes ----------

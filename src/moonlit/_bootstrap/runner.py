@@ -45,14 +45,17 @@ def _check_no_bootstrap_collision(site_dir: Path) -> None:
 
 def _activate_site_dir(site_dir: Path) -> None:
     # D26: addsitedir appends, which lets any host site dir shadow a bundled
-    # distribution. Seat site_dir in its slot first, so the bundle's own .pth
-    # `import` lines already resolve against it (addsitedir won't re-add a dir
-    # already on sys.path, but still processes its .pth files), then move what
-    # those .pth files added into the same block.
-    before = list(sys.path)
-    sys.path.insert(_bundle_slot(before), str(site_dir))
-    site.addsitedir(str(site_dir))
-    sys.path[:] = _place_ahead_of_host_sites(before, sys.path)
+    # distribution. Detach the host tail (from the bundle slot on) while it runs:
+    # site_dir and whatever the bundle's .pth files add then land ahead of every
+    # host site dir, and their `import` lines never see one.
+    snapshot = list(sys.path)
+    slot = _bundle_slot(snapshot)
+    host_tail = sys.path[slot:]
+    del sys.path[slot:]
+    try:
+        site.addsitedir(str(site_dir))
+    finally:
+        sys.path[:] = [*_gather_bundle_block(sys.path, snapshot), *host_tail]
 
 
 def _bundle_slot(entries: list[str]) -> int:
@@ -75,8 +78,9 @@ def _host_site_dirs() -> set[str]:
 
 
 def _stdlib_index(normalized: list[str | None]) -> int:
-    # os.py lives in the stdlib dir (inside the zip, for a zipped stdlib). When
-    # that can't be located on sys.path, -1 makes the host search start at 0.
+    # os is frozen in release builds, so os.__file__ is {sys._stdlib_dir}/os.py
+    # and a PYTHONPATH copy can't respell it. When that dir isn't on sys.path
+    # (e.g. the Windows embeddable distro), -1 makes the host search start at 0.
     os_file = getattr(os, "__file__", None)
     if os_file is None:
         return -1
@@ -87,17 +91,21 @@ def _stdlib_index(normalized: list[str | None]) -> int:
 
 
 def _normalize(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path))
+    # POSIX resolves symlinks: a respelled site dir (e.g. Homebrew's
+    # sitecustomize) must still match. Windows folds case instead; realpath there
+    # opens handles and can stall on offline UNC paths (spec §11).
+    if os.name == "nt":
+        return os.path.normcase(os.path.abspath(path))
+    return os.path.realpath(path)
 
 
-def _place_ahead_of_host_sites(before: list[str], after: list[str]) -> list[str]:
-    # A bundled .pth `import` line can insert anywhere, so diff rather than
-    # slicing the tail; both groups keep their relative order.
-    previous = set(before)
-    added = [entry for entry in after if entry not in previous]
-    kept = [entry for entry in after if entry in previous]
-    anchor = _bundle_slot(kept)
-    return [*kept[:anchor], *added, *kept[anchor:]]
+def _gather_bundle_block(head: list[str], snapshot: list[str]) -> list[str]:
+    # Entries new since the snapshot form the block, in their relative order,
+    # wherever a bundled .pth `import` line inserted them (even index 0). List
+    # membership, not a set: host startup code can leave unhashable junk here.
+    kept = [entry for entry in head if entry in snapshot]
+    block = [entry for entry in head if entry not in snapshot]
+    return [*kept, *block]
 
 
 def _resolve_entry_point_string(env: Environment) -> str:
