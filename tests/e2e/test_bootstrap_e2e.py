@@ -513,6 +513,31 @@ def test_pythonpath_outranks_bundled_distribution(tmp_path: Path) -> None:
     assert "module=override" in stdout
 
 
+def test_host_site_dir_on_pythonpath_cannot_lift_bundle_above_stdlib(tmp_path: Path) -> None:
+    # Docker pattern: PYTHONPATH names the venv's own site-packages. site.py dedupes,
+    # so that dir sits only in its PYTHONPATH slot, ahead of the stdlib. The bundled
+    # stdlib-named module must not win, and the venv copy of shadowpkg keeps
+    # precedence because PYTHONPATH outranks the bundle.
+    venv_python, venv_site = _make_venv(tmp_path / "venv")
+    _write_tree(venv_site, _shadowpkg_files("1.0"))
+    probe_argparse = (
+        "import argparse\n"
+        "print('argparse=bundled' if hasattr(argparse, 'BUNDLED') else 'argparse=stdlib')\n"
+    )
+    pyz = make_test_pyz(
+        tmp_path / "app.pyz",
+        user_modules={
+            **_shadowpkg_files("2.0"),
+            "argparse.py": "BUNDLED = True\n",
+            "myapp.py": probe_argparse + _REPORT_SHADOWPKG,
+        },
+    )
+    env = isolated_env(tmp_path, PYTHONPATH=str(venv_site))
+    code, stdout, stderr = run_pyz(pyz, env=env, interpreter=venv_python)
+    assert code == 0, stderr
+    assert stdout.splitlines() == ["argparse=stdlib", "module=1.0", "metadata=1.0"]
+
+
 # ---------- arch §10 invariants under real subprocess execution ----------
 
 

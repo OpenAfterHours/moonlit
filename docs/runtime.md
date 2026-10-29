@@ -26,7 +26,7 @@ The bootstrap then:
 4. Computes a cache key from the `[project].name` and the build_id.
 5. Resolves the cache root (see below).
 6. Either takes the **fast path** (cache hit, no lock) or the **slow path** (acquire lock, extract to tempdir, atomically install, release lock).
-7. Calls `site.addsitedir(<cache>/<key>/site-packages)` so the staged tree reaches `sys.path` and its `.pth` files are processed, then moves the staged tree (with anything its `.pth` files added) to just ahead of the interpreter's own site-packages, so the bundled dependencies win over any installed copies. See [Import precedence](#import-precedence).
+7. Puts `<cache>/<key>/site-packages` on `sys.path` just ahead of the interpreter's own site-packages (but never ahead of the standard library), so the bundled dependencies win over any installed copies. It then calls `site.addsitedir` on it so its `.pth` files are processed, and keeps whatever they add in the same place. See [Import precedence](#import-precedence).
 8. Resolves the entry point string (or its `MOONLIT_ENTRY_POINT` override), imports the module, walks the attribute path, calls `obj()`.
 9. Coerces the return value: `None` → 0, `int` → masked `& 0xFF`, otherwise `int(result) & 0xFF` (or exit 2 if uncoercible).
 
@@ -40,9 +40,11 @@ A `.pyz` runs on whatever interpreter the recipient uses, and that interpreter m
 4. The bundled `site-packages` (and anything its `.pth` files add).
 5. The interpreter's site-packages dirs (user site, venv or system), plus anything their `.pth` files add.
 
-`PYTHONPATH` stays ahead of the bundle on purpose. It is the escape hatch for swapping in a patched copy of a bundled dependency without rebuilding.
+`PYTHONPATH` stays ahead of the bundle on purpose, as in standard Python. It is the escape hatch for swapping in a patched copy of a bundled dependency without rebuilding. The bundle never moves ahead of the standard library, even when `PYTHONPATH` names one of the interpreter's own site-packages dirs.
 
-One limit: code the interpreter runs at startup, before the bootstrap (`sitecustomize`, `usercustomize`, or an `import` line in an installed `.pth` file), can import a module before the bundle is on `sys.path`, and that early import wins. To rule it out, run the archive with `python -s app.pyz` (or set `PYTHONNOUSERSITE=1`) to skip the user site, or with `python -S app.pyz` to skip the interpreter's site-packages entirely.
+Some environments set `PYTHONPATH` for you, and it can then shadow the bundle: Docker images that point it at a venv's `site-packages`, Nix dev shells, ROS setup scripts. If that bites, run `python -E app.pyz` (ignore `PYTHON*` variables) or `python -I app.pyz`, or unset `PYTHONPATH`.
+
+One limit: code the interpreter runs at startup, before the bootstrap (`sitecustomize`, `usercustomize`, or an `import` line in an installed `.pth` file), can import a module before the bundle is on `sys.path`, and that early import wins. Your app then runs the installed copy while `importlib.metadata` reports the bundled version. To rule it out, run the archive with `python -s app.pyz` (or set `PYTHONNOUSERSITE=1`) to skip the user site, or with `python -S app.pyz` to skip the interpreter's site-packages entirely. `-S` also drops the `exit()` / `quit()` builtins and any startup fixes installed through `.pth` files, such as CA certificate injection.
 
 ## Cache layout
 

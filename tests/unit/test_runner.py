@@ -14,6 +14,7 @@ import site
 import sys
 from collections.abc import Iterator
 from pathlib import Path
+from typing import Any, cast
 
 import pytest
 
@@ -55,6 +56,12 @@ def host_site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
     monkeypatch.setattr(site, "getusersitepackages", lambda: str(tmp_path / "no-user-site"))
     sys.path.append(str(host))
     return host
+
+
+def stdlib_index() -> int:
+    """Index of the real stdlib dir (where os.py lives) on this process's sys.path."""
+    stdlib = os.path.normcase(os.path.dirname(os.__file__))
+    return next(i for i, entry in enumerate(sys.path) if os.path.normcase(entry) == stdlib)
 
 
 def make_env(entry_point: str) -> Environment:
@@ -422,6 +429,67 @@ def test_pythonpath_dir_named_site_packages_stays_ahead(tmp_path: Path, host_sit
     write_module(site_dir, "mymod_pythonpath", "def main():\n    return 0\n")
     run(make_env("mymod_pythonpath:main"), site_dir)
     assert sys.path.index(str(pythonpath_dir)) < sys.path.index(str(site_dir))
+
+
+def test_host_site_dir_ahead_of_stdlib_is_not_the_anchor(tmp_path: Path, host_site: Path) -> None:
+    # Docker's `PYTHONPATH=/opt/venv/.../site-packages`: site.py dedupes, so the host
+    # dir sits only in its PYTHONPATH slot, ahead of the stdlib. Anchoring on it
+    # would let a bundled module shadow the stdlib.
+    sys.path.remove(str(host_site))
+    sys.path.insert(1, str(host_site))
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "mymod_stdlib", "def main():\n    return 0\n")
+    run(make_env("mymod_stdlib:main"), site_dir)
+    assert sys.path.index(str(site_dir)) > stdlib_index()
+
+
+def test_stdlib_not_on_sys_path_searches_from_the_start(
+    tmp_path: Path, host_site: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(os, "__file__", str(tmp_path / "elsewhere" / "os.py"))
+    sys.path.remove(str(host_site))
+    sys.path.insert(1, str(host_site))
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "mymod_no_stdlib", "def main():\n    return 0\n")
+    run(make_env("mymod_no_stdlib:main"), site_dir)
+    assert sys.path.index(str(site_dir)) == sys.path.index(str(host_site)) - 1
+
+
+def test_os_without_file_searches_from_the_start(
+    tmp_path: Path, host_site: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.delattr(os, "__file__")
+    sys.path.remove(str(host_site))
+    sys.path.insert(1, str(host_site))
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "mymod_no_os_file", "def main():\n    return 0\n")
+    run(make_env("mymod_no_os_file:main"), site_dir)
+    assert sys.path.index(str(site_dir)) == sys.path.index(str(host_site)) - 1
+
+
+def test_bundled_pth_import_line_resolves_against_the_bundle(
+    tmp_path: Path, host_site: Path
+) -> None:
+    # Bundled .pth `import` lines run inside addsitedir, so site_dir must already sit
+    # ahead of the host dirs by then. This also pins that the .pth is still
+    # processed when site_dir is already on sys.path.
+    write_module(host_site, "pth_helper", "")
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "pth_helper", "")
+    (site_dir / "helper.pth").write_text("import pth_helper\n", encoding="utf-8")
+    write_module(site_dir, "mymod_pth_helper", "def main():\n    return 0\n")
+    run(make_env("mymod_pth_helper:main"), site_dir)
+    assert sys.modules["pth_helper"].__file__ == str(site_dir / "pth_helper.py")
+
+
+def test_non_str_sys_path_entry_is_skipped(tmp_path: Path, host_site: Path) -> None:
+    # Host startup code can leave junk such as None on sys.path; bare addsitedir
+    # tolerated it, so the placement must too.
+    sys.path.insert(sys.path.index(str(host_site)), cast(Any, None))
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "mymod_junk", "def main():\n    return 0\n")
+    run(make_env("mymod_junk:main"), site_dir)
+    assert sys.path.index(str(site_dir)) == sys.path.index(str(host_site)) - 1
 
 
 # ---------- exit-code attributes ----------

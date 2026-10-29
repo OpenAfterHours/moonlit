@@ -45,12 +45,27 @@ def _check_no_bootstrap_collision(site_dir: Path) -> None:
 
 def _activate_site_dir(site_dir: Path) -> None:
     # D26: addsitedir appends, which lets any host site dir shadow a bundled
-    # distribution. Move everything it added (site_dir plus its .pth entries)
-    # to just ahead of the first host site dir — still behind stdlib/PYTHONPATH.
-    host_dirs = _host_site_dirs()
+    # distribution. Seat site_dir in its slot first, so the bundle's own .pth
+    # `import` lines already resolve against it (addsitedir won't re-add a dir
+    # already on sys.path, but still processes its .pth files), then move what
+    # those .pth files added into the same block.
     before = list(sys.path)
+    sys.path.insert(_bundle_slot(before), str(site_dir))
     site.addsitedir(str(site_dir))
-    sys.path[:] = _place_ahead_of_host_sites(before, sys.path, host_dirs)
+    sys.path[:] = _place_ahead_of_host_sites(before, sys.path)
+
+
+def _bundle_slot(entries: list[str]) -> int:
+    # Just ahead of the first host site dir AFTER the stdlib. One reached via
+    # PYTHONPATH sits ahead of the stdlib and must not lift the bundle above it.
+    # Host startup code can leave non-str junk (e.g. None) here; it matches nothing.
+    normalized = [_normalize(entry) if isinstance(entry, str) else None for entry in entries]
+    host_dirs = _host_site_dirs()
+    for index in range(_stdlib_index(normalized) + 1, len(normalized)):
+        if normalized[index] in host_dirs:
+            return index
+    # No host site dir after the stdlib (e.g. `python -S`): nothing to shadow.
+    return len(normalized)
 
 
 def _host_site_dirs() -> set[str]:
@@ -59,28 +74,30 @@ def _host_site_dirs() -> set[str]:
     return {_normalize(path) for path in candidates if path}
 
 
-def _place_ahead_of_host_sites(
-    before: list[str], after: list[str], host_dirs: set[str]
-) -> list[str]:
+def _stdlib_index(normalized: list[str | None]) -> int:
+    # os.py lives in the stdlib dir (inside the zip, for a zipped stdlib). When
+    # that can't be located on sys.path, -1 makes the host search start at 0.
+    os_file = getattr(os, "__file__", None)
+    if os_file is None:
+        return -1
+    stdlib = _normalize(os.path.dirname(os_file))
+    if stdlib not in normalized:
+        return -1
+    return normalized.index(stdlib)
+
+
+def _normalize(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
+
+
+def _place_ahead_of_host_sites(before: list[str], after: list[str]) -> list[str]:
     # A bundled .pth `import` line can insert anywhere, so diff rather than
     # slicing the tail; both groups keep their relative order.
     previous = set(before)
     added = [entry for entry in after if entry not in previous]
     kept = [entry for entry in after if entry in previous]
-    anchor = _first_host_site_index(kept, host_dirs)
+    anchor = _bundle_slot(kept)
     return [*kept[:anchor], *added, *kept[anchor:]]
-
-
-def _first_host_site_index(entries: list[str], host_dirs: set[str]) -> int:
-    for index, entry in enumerate(entries):
-        if _normalize(entry) in host_dirs:
-            return index
-    # No host site dir active (e.g. `python -S`): nothing to shadow, so append.
-    return len(entries)
-
-
-def _normalize(path: str) -> str:
-    return os.path.normcase(os.path.abspath(path))
 
 
 def _resolve_entry_point_string(env: Environment) -> str:
