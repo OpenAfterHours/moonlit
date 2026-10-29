@@ -12,7 +12,7 @@ The zip archive contains site-packages contents under a `site-packages/` prefix.
 
 **Build pipeline** writes arcs as `"site-packages/" + relpath_from_site_packages.as_posix()` for each file under `<staging>/site-packages/`. Files outside `<staging>/site-packages/` (e.g. `<staging>/bin/`) are NOT bundled in MVP.
 
-**Bootstrap** iterates archive entries; only those whose arcname starts with `site-packages/` are extracted, with the prefix stripped, into `<cache>/<cache_key>/site-packages/<remaining>`. `_bootstrap/`, `__main__.py`, and `env.json` are NOT extracted to the cache. Bootstrap calls `site.addsitedir("<cache>/<cache_key>/site-packages")`.
+**Bootstrap** iterates archive entries; only those whose arcname starts with `site-packages/` are extracted, with the prefix stripped, into `<cache>/<cache_key>/site-packages/<remaining>`. `_bootstrap/`, `__main__.py`, and `env.json` are NOT extracted to the cache. Bootstrap calls `site.addsitedir("<cache>/<cache_key>/site-packages")` and then places the entries it added on `sys.path` per D26.
 
 ## D2. Workspace transitive deps
 
@@ -417,6 +417,26 @@ The resolved name must match the env.json PEP 508 name regex (D11); it is stored
 **D25f — Error mapping.** A non-zero `uv pip compile` is `CompileError` (exit 8 — the resolution-failure code shared with `ExportError`; a distinct class name keeps the `<ClassName>: <message>` line legible). `uv` missing from PATH → `UvNotFoundError` (3). The install, entry-point, output-path, bundled-Python, and archive steps reuse `build`'s existing classes and codes unchanged (`StagingError` 9, `ConsoleScriptNotFoundError`/`BadEntryPointError` 6, `OutputExistsError`/`OutputNotWritableError` 7, `PythonBundleError` 13).
 
 **D25g — Flag parity.** `pack` accepts the full output-shaping flag set of `build` with identical semantics: `-o` (required), `-p/--python`, `--python-version` (D20), `--windows-exe` (D19), `--bundle-python` (D21), `--force`, `--gc/--no-gc`, `--gc-keep-latest`, `--gc-grace` (D24), `-q`/`-v`. These all operate on the shared back half, so no per-flag re-specification is needed — the `build` decisions govern. `pack` does NOT accept `--package`, `--dev`/`--no-dev` (no workspace, no dependency groups).
+
+## D26 — Bundled site-packages precedence
+
+An artifact's dependency set is fixed at build time by its lock (`uv.lock` for `build`, the compiled requirements for `pack` per D25b), so the bundled tree must win over whatever the host interpreter happens to have installed. `site.addsitedir` alone does not guarantee that: it **appends**, so the bundled `site-packages` landed behind every host site dir (user site, venv or system `site-packages`, Debian `dist-packages`). A host holding an older copy of a bundled distribution then silently shadowed it, for both the import and `importlib.metadata.version()`.
+
+**Placement.** The bootstrap (`_bootstrap/runner.py`, specs/03-bootstrap-runtime.md §7) still calls `site.addsitedir`, because that is what processes the bundle's `.pth` files. It snapshots `sys.path` first, then moves every entry the call added (`site_dir` plus its `.pth`-added entries, found by diffing, since a `.pth` `import` line can insert anywhere) as one contiguous block, in their relative order, to **immediately before the first host site dir**. This is the same placement shiv uses. Resulting precedence, highest first:
+
+1. `sys.path[0]`, the archive (keeps `_bootstrap` importable).
+2. `PYTHONPATH` entries.
+3. The stdlib (`python3XY.zip`, `lib/python3.X` / `Lib`, `lib-dynload` / `DLLs`).
+4. The bundled block.
+5. Host site dirs and everything host `.pth` files / `sitecustomize` appended after them.
+
+**Host site dir.** A `sys.path` entry whose `os.path.normcase(os.path.abspath(entry))` matches the same normalization of an entry of `site.getsitepackages()` or of `site.getusersitepackages()`. Membership, never a basename heuristic (shiv matches on the basename; D26 deliberately does not): classing every `*/site-packages` or `*/dist-packages` entry as host would treat a `PYTHONPATH=/x/site-packages` entry as the anchor and put the bundle ahead of the stdlib. With no host site dir on `sys.path` (`python -S`), the block stays appended, which is the pre-D26 behavior.
+
+**PYTHONPATH is the escape hatch.** `PYTHONPATH` entries sit ahead of the stdlib on `sys.path`, so outranking them would also mean outranking the stdlib. They are kept ahead on purpose: an operator who sets `PYTHONPATH` is asking for exactly that override (patching a bundled dependency in the field, debugging). This matches shiv.
+
+**Known limitation (not fixed).** Host code that runs at interpreter startup, before the bootstrap, can pre-import modules into `sys.modules` or insert `sys.meta_path` finders ahead of the path finder: `sitecustomize`, `usercustomize`, and `import` lines in host `.pth` files. Reordering `sys.path` cannot undo that, and evicting `sys.modules` entries is unsafe (other already-imported modules hold references to them), so the bootstrap does neither. Recipient mitigations: `-s` / `PYTHONNOUSERSITE=1` (or `-I`) skip the user site; only `-S` skips startup code in venv or system site dirs.
+
+**Scope.** Bootstrap only. No new env var (D16 unchanged), no new module (`site`, `sys`, `os` are already allowed under D7), no build-side or `env.json` change. The placement ships in the `_bootstrap/` copied into each newly built archive; archives built before D26 keep the append behavior until rebuilt.
 
 ---
 

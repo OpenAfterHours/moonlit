@@ -9,6 +9,8 @@ between tests because runner.run() mutates global interpreter state via
 ``site.addsitedir`` and ``importlib.import_module``.
 """
 
+import os
+import site
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -38,6 +40,21 @@ def _isolate_sys_state() -> Iterator[None]:
 @pytest.fixture(autouse=True)
 def _clean_entry_point_env(monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.delenv("MOONLIT_ENTRY_POINT", raising=False)
+
+
+@pytest.fixture
+def host_site(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
+    """A fake host site-packages: last on sys.path and reported by site.getsitepackages.
+
+    Stubbing both site queries makes this the only host site dir, so the real
+    entries already on sys.path stand in for stdlib / PYTHONPATH ahead of it.
+    """
+    host = tmp_path / "host" / "site-packages"
+    host.mkdir(parents=True)
+    monkeypatch.setattr(site, "getsitepackages", lambda: [str(host)])
+    monkeypatch.setattr(site, "getusersitepackages", lambda: str(tmp_path / "no-user-site"))
+    sys.path.append(str(host))
+    return host
 
 
 def make_env(entry_point: str) -> Environment:
@@ -300,6 +317,111 @@ def test_run_adds_site_dir_to_sys_path(tmp_path: Path) -> None:
     assert str(site_dir) not in sys.path
     run(make_env("mymod_sidefx:main"), site_dir)
     assert str(site_dir) in sys.path
+
+
+# ---------- sys.path placement: bundled ahead of host site dirs (D26) ----------
+
+
+def test_bundled_module_wins_over_host_site_copy(tmp_path: Path, host_site: Path) -> None:
+    # The D26 bug: addsitedir appends, so a stale host copy shadowed the bundled one.
+    write_module(host_site, "shadowed_mod", "def main():\n    return 1\n")
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "shadowed_mod", "def main():\n    return 2\n")
+    assert run(make_env("shadowed_mod:main"), site_dir) == 2
+
+
+def test_site_dir_lands_immediately_before_first_host_site_dir(
+    tmp_path: Path, host_site: Path
+) -> None:
+    # Everything ahead of the host dir (sys.path[0], PYTHONPATH, stdlib) keeps its
+    # place; what host .pth files appended after it stays behind the bundled dir.
+    trailing = str(tmp_path / "appended-by-host-pth")
+    sys.path.append(trailing)
+    ahead = sys.path[: sys.path.index(str(host_site))]
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "mymod_order", "def main():\n    return 0\n")
+    run(make_env("mymod_order:main"), site_dir)
+    assert sys.path == [*ahead, str(site_dir), str(host_site), trailing]
+
+
+def test_user_site_dir_counts_as_host_site_dir(
+    tmp_path: Path, host_site: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The user site precedes the system site dirs on sys.path, so it is the anchor.
+    user_site = tmp_path / "user-site"
+    user_site.mkdir()
+    monkeypatch.setattr(site, "getusersitepackages", lambda: str(user_site))
+    sys.path.insert(sys.path.index(str(host_site)), str(user_site))
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "mymod_user", "def main():\n    return 0\n")
+    run(make_env("mymod_user:main"), site_dir)
+    assert sys.path.index(str(site_dir)) == sys.path.index(str(user_site)) - 1
+
+
+def test_host_site_dir_match_is_path_normalized(
+    tmp_path: Path, host_site: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # site.getsitepackages() and sys.path may spell the same directory differently.
+    respelled = os.path.join(str(host_site), "..", host_site.name)
+    monkeypatch.setattr(site, "getsitepackages", lambda: [respelled])
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "mymod_norm", "def main():\n    return 0\n")
+    run(make_env("mymod_norm:main"), site_dir)
+    assert sys.path.index(str(site_dir)) == sys.path.index(str(host_site)) - 1
+
+
+def test_pth_added_dir_travels_with_site_dir(tmp_path: Path, host_site: Path) -> None:
+    site_dir = make_site_dir(tmp_path)
+    (site_dir / "extra").mkdir()
+    (site_dir / "extra.pth").write_text("extra\n", encoding="utf-8")
+    write_module(site_dir, "mymod_pth", "def main():\n    return 0\n")
+    run(make_env("mymod_pth:main"), site_dir)
+    start = sys.path.index(str(site_dir))
+    assert sys.path[start : start + 3] == [
+        str(site_dir),
+        str(site_dir / "extra"),
+        str(host_site),
+    ]
+
+
+def test_pth_import_line_insert_joins_the_bundled_block(tmp_path: Path, host_site: Path) -> None:
+    # A bundled .pth `import` line can put an entry anywhere, not only at the tail;
+    # it still moves with the block instead of jumping ahead of stdlib.
+    site_dir = make_site_dir(tmp_path)
+    front = site_dir / "front"
+    front.mkdir()
+    (site_dir / "front.pth").write_text(
+        f"import sys; sys.path.insert(0, {str(front)!r})\n", encoding="utf-8"
+    )
+    write_module(site_dir, "mymod_pth_import", "def main():\n    return 0\n")
+    run(make_env("mymod_pth_import:main"), site_dir)
+    host_index = sys.path.index(str(host_site))
+    assert sys.path[host_index - 2 : host_index] == [str(front), str(site_dir)]
+
+
+def test_no_host_site_dir_on_sys_path_appends(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # e.g. `python -S`: no host site dir is active, so there is nothing to shadow.
+    monkeypatch.setattr(site, "getsitepackages", lambda: [str(tmp_path / "absent")])
+    monkeypatch.setattr(site, "getusersitepackages", lambda: str(tmp_path / "absent-user"))
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "mymod_no_host", "def main():\n    return 0\n")
+    run(make_env("mymod_no_host:main"), site_dir)
+    assert sys.path[-1] == str(site_dir)
+
+
+def test_pythonpath_dir_named_site_packages_stays_ahead(tmp_path: Path, host_site: Path) -> None:
+    # "Host" means listed by site.getsitepackages()/getusersitepackages(), never a
+    # basename match: a PYTHONPATH entry that merely ends in site-packages keeps
+    # its precedence over the bundled dir.
+    pythonpath_dir = tmp_path / "pythonpath" / "site-packages"
+    pythonpath_dir.mkdir(parents=True)
+    sys.path.insert(1, str(pythonpath_dir))
+    site_dir = make_site_dir(tmp_path)
+    write_module(site_dir, "mymod_pythonpath", "def main():\n    return 0\n")
+    run(make_env("mymod_pythonpath:main"), site_dir)
+    assert sys.path.index(str(pythonpath_dir)) < sys.path.index(str(site_dir))
 
 
 # ---------- exit-code attributes ----------

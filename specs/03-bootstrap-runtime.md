@@ -50,7 +50,7 @@ In folder-bundle mode (D21) the launcher always dispatches `_python/python.exe`,
 8. **Fast path (D14, no lock):** if `site_dir.is_dir()` AND `MOONLIT_FORCE_EXTRACT` is unset → goto 11.
 9. **Slow path:** acquire **lock_path** (Section 5). Re-check `site_dir.is_dir()` AND `MOONLIT_FORCE_EXTRACT` unset; if both true (sibling won the race), release lock and goto 11.
 10. Extract (Section 6). Atomically install (D4). Sweep stale `.old.<otherpid>` siblings best-effort. Then, when GC is enabled (env.json `gc.enabled` and not `MOONLIT_NO_GC`), run the same-app cache self-GC (D24, specs/04-cache-layout.md §12.2) best-effort — still under the held lock. Release lock in `finally`. Both the sweep and the reap are best-effort: any failure is swallowed and never changes the exit code.
-11. Verify the staged tree does not collide with `_bootstrap` (Section 7). Call `site.addsitedir(str(site_dir))`.
+11. Verify the staged tree does not collide with `_bootstrap` (Section 7). Call `site.addsitedir(str(site_dir))`, then move every entry it added to immediately before the first host site dir on `sys.path` (Section 7, D26).
 12. Resolve entry point (Section 8). Import + invoke with no arguments.
 13. Coerce return value (Section 8). Mask `& 0xFF`. Return.
 
@@ -157,6 +157,18 @@ def _try_lock(fd):
 
 Call `site.addsitedir(str(site_dir))`. This processes `.pth` files. The archive remains on `sys.path[0]` so that `_bootstrap` itself is still importable for the duration of the call.
 
+**Placement (D26).** `addsitedir` appends, which would leave the bundled tree behind every host site dir already on `sys.path`, so a stale host copy of a bundled distribution would win both the import and the `importlib.metadata` lookup. The bootstrap therefore snapshots `sys.path` before the call and, afterwards, moves every entry the call added (`site_dir` plus whatever its `.pth` files added, wherever a `.pth` `import` line inserted it, in their relative order) as one contiguous block to immediately before the first **host site dir**. Pre-existing entries keep their relative order. Resulting precedence, highest first:
+
+1. `sys.path[0]`, the archive itself.
+2. `PYTHONPATH` entries, the deliberate operator override.
+3. The stdlib (`python3XY.zip`, `lib/python3.X` / `Lib`, `lib-dynload` / `DLLs`). A bundled distribution must never shadow it.
+4. The bundled block.
+5. Host site dirs (user site, venv or system `site-packages`, Debian `dist-packages`) and everything host `.pth` files appended after them.
+
+A **host site dir** is a `sys.path` entry whose `os.path.normcase(os.path.abspath(entry))` equals the same normalization of an entry of `site.getsitepackages()` or of `site.getusersitepackages()` (skipped when it returns `None`). There is no basename heuristic: a `PYTHONPATH` entry that merely ends in `site-packages` is not a host site dir and stays ahead of the bundle. When no host site dir is on `sys.path` (e.g. `python -S`), the block stays appended at the end, since nothing installed can shadow it.
+
+**Known limitation.** Host code that runs at interpreter startup, before the bootstrap, is out of reach: `sitecustomize` / `usercustomize` and `import` lines in host `.pth` files can import a module into `sys.modules` or insert a `sys.meta_path` finder ahead of the path finder. Reordering `sys.path` cannot undo either, and evicting `sys.modules` entries is unsafe, so the bootstrap does neither. For the user site, recipients can run with `-s` / `PYTHONNOUSERSITE=1` (or `-I`, which also ignores `PYTHON*` variables). Startup code in a venv or system site dir is skipped only by `-S`, which also removes every host site dir from `sys.path`.
+
 **Collision check:** if `os.listdir(site_dir)` contains an entry whose **case-folded** name equals `"_bootstrap"`, exit 1 with `"_bootstrap collision in staged tree"`. Case-fold comparison covers Windows / HFS+ case-insensitive filesystems.
 
 ## 8. Entry point resolution and return-value coercion
@@ -233,7 +245,7 @@ The bootstrap MUST import only from the Python 3.13 standard library. Allowed mo
 | `sys` | `sys.argv`, `sys.exit`, `sys.path`, `sys.stdlib_module_names`, `sys.version_info` |
 | `json` | env.json parse |
 | `zipfile` | archive read + entry extraction |
-| `site` | `site.addsitedir` |
+| `site` | `site.addsitedir`; `site.getsitepackages` / `site.getusersitepackages` to locate host site dirs (D26) |
 | `importlib` | entry-point import |
 | `time` | lock poll deadline |
 | `pathlib` | `Path` |

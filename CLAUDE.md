@@ -102,6 +102,7 @@ If you find yourself jumping up the file to understand a downstream function, th
 - **`env.json` is not part of the build_id input**. Compute the id first, then write env.json.
 - **Shebang prefix goes before the zip header**, not as a zip entry. This is what makes `.pyz` files Unix-executable. `zipapp` and `zipfile` both tolerate a leading `#!...\n` line.
 - **`--no-deps` on every `uv pip install`** in the build pipeline. The lockfile is the single source of truth for resolution; we do not want uv re-resolving and disagreeing with `uv.lock`.
+- **Bundled site-packages precede host site dirs (D26)**: after `site.addsitedir`, `_bootstrap/runner.py` moves the bundled dir and its `.pth`-added entries to just before the first `sys.path` entry listed by `site.getsitepackages()` / `site.getusersitepackages()`, so a stale host copy never shadows a bundled distribution. They still follow `sys.path[0]`, `PYTHONPATH`, and the stdlib. Never fall back to bare `addsitedir` (it appends), and never detect host dirs by basename (a `PYTHONPATH=/x/site-packages` entry would become the anchor, putting the bundle ahead of the stdlib).
 - **`--reinstall-package <name>`** in step 6 — defensive against future changes to `uv export` semantics.
 - **Cache root on Windows is `%LOCALAPPDATA%\moonlit`**, not `~/.moonlit`. Roaming profiles must not bloat.
 - **`os.replace()` for atomic rename** — works on both POSIX and Windows since Python 3.3. Don't use `os.rename()` (Windows fails if the target exists).

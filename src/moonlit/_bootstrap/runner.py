@@ -1,14 +1,16 @@
 """sys.path setup, entry-point resolution, and return-value coercion.
 
-Implements specs/03-bootstrap-runtime.md §7 (collision check, addsitedir)
-and §8 (entry-point parsing, import, getattr walk, invocation, return-value
-coercion). Failures from this module raise either CollisionError (exit 1)
-or EntryPointError (exit 2) per the D3 runtime enumeration.
+Implements specs/03-bootstrap-runtime.md §7 (collision check, addsitedir,
+D26 placement ahead of host site dirs) and §8 (entry-point parsing, import,
+getattr walk, invocation, return-value coercion). Failures from this module
+raise either CollisionError (exit 1) or EntryPointError (exit 2) per the D3
+runtime enumeration.
 """
 
 import importlib
 import os
 import site
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,7 +24,7 @@ def run(env: Environment, site_dir: Path) -> int:
     Returns an int in [0, 255] suitable for ``sys.exit``.
     """
     _check_no_bootstrap_collision(site_dir)
-    site.addsitedir(str(site_dir))
+    _activate_site_dir(site_dir)
     entry_point_str = _resolve_entry_point_string(env)
     module_name, attr = _parse_entry_point(entry_point_str)
     obj = _import_and_resolve(module_name, attr)
@@ -39,6 +41,46 @@ def _check_no_bootstrap_collision(site_dir: Path) -> None:
     for entry in os.listdir(site_dir):
         if entry.casefold() == "_bootstrap":
             raise CollisionError("_bootstrap collision in staged tree")
+
+
+def _activate_site_dir(site_dir: Path) -> None:
+    # D26: addsitedir appends, which lets any host site dir shadow a bundled
+    # distribution. Move everything it added (site_dir plus its .pth entries)
+    # to just ahead of the first host site dir — still behind stdlib/PYTHONPATH.
+    host_dirs = _host_site_dirs()
+    before = list(sys.path)
+    site.addsitedir(str(site_dir))
+    sys.path[:] = _place_ahead_of_host_sites(before, sys.path, host_dirs)
+
+
+def _host_site_dirs() -> set[str]:
+    # getusersitepackages() is None on platforms with no home dir (WASI, iOS, …).
+    candidates = [*site.getsitepackages(), site.getusersitepackages()]
+    return {_normalize(path) for path in candidates if path}
+
+
+def _place_ahead_of_host_sites(
+    before: list[str], after: list[str], host_dirs: set[str]
+) -> list[str]:
+    # A bundled .pth `import` line can insert anywhere, so diff rather than
+    # slicing the tail; both groups keep their relative order.
+    previous = set(before)
+    added = [entry for entry in after if entry not in previous]
+    kept = [entry for entry in after if entry in previous]
+    anchor = _first_host_site_index(kept, host_dirs)
+    return [*kept[:anchor], *added, *kept[anchor:]]
+
+
+def _first_host_site_index(entries: list[str], host_dirs: set[str]) -> int:
+    for index, entry in enumerate(entries):
+        if _normalize(entry) in host_dirs:
+            return index
+    # No host site dir active (e.g. `python -S`): nothing to shadow, so append.
+    return len(entries)
+
+
+def _normalize(path: str) -> str:
+    return os.path.normcase(os.path.abspath(path))
 
 
 def _resolve_entry_point_string(env: Environment) -> str:

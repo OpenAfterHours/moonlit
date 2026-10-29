@@ -26,9 +26,23 @@ The bootstrap then:
 4. Computes a cache key from the `[project].name` and the build_id.
 5. Resolves the cache root (see below).
 6. Either takes the **fast path** (cache hit, no lock) or the **slow path** (acquire lock, extract to tempdir, atomically install, release lock).
-7. Calls `site.addsitedir(<cache>/<key>/site-packages)` so the staged tree reaches `sys.path` and `.pth` files are processed.
+7. Calls `site.addsitedir(<cache>/<key>/site-packages)` so the staged tree reaches `sys.path` and its `.pth` files are processed, then moves the staged tree (with anything its `.pth` files added) to just ahead of the interpreter's own site-packages, so the bundled dependencies win over any installed copies. See [Import precedence](#import-precedence).
 8. Resolves the entry point string (or its `MOONLIT_ENTRY_POINT` override), imports the module, walks the attribute path, calls `obj()`.
 9. Coerces the return value: `None` → 0, `int` → masked `& 0xFF`, otherwise `int(result) & 0xFF` (or exit 2 if uncoercible).
+
+### Import precedence
+
+A `.pyz` runs on whatever interpreter the recipient uses, and that interpreter may already have older copies of your dependencies installed: in a venv, in the system `site-packages` / `dist-packages`, or in the user site. The bundled tree is placed ahead of all of those, so your app imports, and `importlib.metadata` reports, exactly the versions that were locked at build time. From highest precedence to lowest:
+
+1. The `.pyz` archive itself.
+2. `PYTHONPATH` entries.
+3. The standard library.
+4. The bundled `site-packages` (and anything its `.pth` files add).
+5. The interpreter's site-packages dirs (user site, venv or system), plus anything their `.pth` files add.
+
+`PYTHONPATH` stays ahead of the bundle on purpose. It is the escape hatch for swapping in a patched copy of a bundled dependency without rebuilding.
+
+One limit: code the interpreter runs at startup, before the bootstrap (`sitecustomize`, `usercustomize`, or an `import` line in an installed `.pth` file), can import a module before the bundle is on `sys.path`, and that early import wins. To rule it out, run the archive with `python -s app.pyz` (or set `PYTHONNOUSERSITE=1`) to skip the user site, or with `python -S app.pyz` to skip the interpreter's site-packages entirely.
 
 ## Cache layout
 

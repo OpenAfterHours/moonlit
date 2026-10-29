@@ -114,9 +114,10 @@ def run_pyz(
     *,
     env: dict[str, str] | None = None,
     timeout: float = 30.0,
+    interpreter: Path | str = sys.executable,
 ) -> tuple[int, str, str]:
     proc = subprocess.run(
-        [sys.executable, str(pyz)],
+        [str(interpreter), str(pyz)],
         capture_output=True,
         text=True,
         env=env,
@@ -431,6 +432,85 @@ def test_bootstrap_collision_exits_1(tmp_path: Path) -> None:
     code, _, stderr = run_pyz(pyz, env=isolated_env(tmp_path))
     assert code == 1
     assert "_bootstrap collision" in stderr
+
+
+# ---------- bundled site-packages precedence (D26) ----------
+
+
+_REPORT_SHADOWPKG = (
+    "import importlib.metadata\n"
+    "import shadowpkg\n"
+    "def main():\n"
+    "    print(f'module={shadowpkg.VERSION}')\n"
+    "    print(f\"metadata={importlib.metadata.version('shadowpkg')}\")\n"
+    "    return 0\n"
+)
+
+
+def _shadowpkg_files(version: str) -> dict[str, str]:
+    """A one-module distribution ``shadowpkg`` plus its dist-info, site-packages-relative."""
+    return {
+        "shadowpkg.py": f"VERSION = {version!r}\n",
+        f"shadowpkg-{version}.dist-info/METADATA": (
+            f"Metadata-Version: 2.1\nName: shadowpkg\nVersion: {version}\n"
+        ),
+    }
+
+
+def _write_tree(root: Path, files: dict[str, str]) -> None:
+    for rel, text in files.items():
+        path = root / rel
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8")
+
+
+def _make_venv(venv_dir: Path) -> tuple[Path, Path]:
+    """Create a stdlib venv; return (its python, the site-packages it reports)."""
+    subprocess.run(
+        [sys.executable, "-m", "venv", "--without-pip", str(venv_dir)], check=True, timeout=60
+    )
+    if os.name == "nt":
+        python = venv_dir / "Scripts" / "python.exe"
+    else:
+        python = venv_dir / "bin" / "python"
+    # Ask the venv rather than hard-coding lib/python3.X vs Lib layouts.
+    purelib = subprocess.run(
+        [str(python), "-c", "import sysconfig; print(sysconfig.get_path('purelib'))"],
+        capture_output=True,
+        text=True,
+        check=True,
+        timeout=30,
+    ).stdout.strip()
+    return python, Path(purelib)
+
+
+def test_bundled_distribution_beats_stale_host_copy(tmp_path: Path) -> None:
+    # The venv running the .pyz holds a stale shadowpkg 1.0; the bundled 2.0 must
+    # win for both the import and its distribution metadata.
+    venv_python, venv_site = _make_venv(tmp_path / "venv")
+    _write_tree(venv_site, _shadowpkg_files("1.0"))
+    pyz = make_test_pyz(
+        tmp_path / "app.pyz",
+        user_modules={**_shadowpkg_files("2.0"), "myapp.py": _REPORT_SHADOWPKG},
+    )
+    env = isolated_env(tmp_path)
+    env.pop("PYTHONPATH", None)  # PYTHONPATH outranks the bundle by design.
+    code, stdout, stderr = run_pyz(pyz, env=env, interpreter=venv_python)
+    assert code == 0, stderr
+    assert stdout.splitlines() == ["module=2.0", "metadata=2.0"]
+
+
+def test_pythonpath_outranks_bundled_distribution(tmp_path: Path) -> None:
+    # The documented operator override: PYTHONPATH sits ahead of the bundled tree.
+    override = tmp_path / "override"
+    _write_tree(override, {"shadowpkg.py": "VERSION = 'override'\n"})
+    pyz = make_test_pyz(
+        tmp_path / "app.pyz",
+        user_modules={**_shadowpkg_files("2.0"), "myapp.py": _REPORT_SHADOWPKG},
+    )
+    code, stdout, stderr = run_pyz(pyz, env=isolated_env(tmp_path, PYTHONPATH=str(override)))
+    assert code == 0, stderr
+    assert "module=override" in stdout
 
 
 # ---------- arch §10 invariants under real subprocess execution ----------
