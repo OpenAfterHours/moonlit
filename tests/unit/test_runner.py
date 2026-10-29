@@ -572,10 +572,14 @@ def test_interrupt_during_pth_processing_restores_the_host_tail(
     tmp_path: Path, host_site: Path
 ) -> None:
     # site.py swallows Exception from a .pth line but not KeyboardInterrupt; the
-    # detached host tail must still come back.
+    # detached host tail must still come back. Raise a subclass: CPython marks an
+    # exact KeyboardInterrupt escaping exec() as unhandled even once caught, and
+    # the pytest process would then exit via SIGINT after every test passed.
     ahead = sys.path[: sys.path.index(str(host_site))]
     site_dir = make_site_dir(tmp_path)
-    write_module(site_dir, "kbi_mod", "raise KeyboardInterrupt\n")
+    write_module(
+        site_dir, "kbi_mod", "class Interrupt(KeyboardInterrupt):\n    pass\n\nraise Interrupt\n"
+    )
     (site_dir / "kbi.pth").write_text("import kbi_mod\n", encoding="utf-8")
     with pytest.raises(KeyboardInterrupt):
         run(make_env("anything:main"), site_dir)
