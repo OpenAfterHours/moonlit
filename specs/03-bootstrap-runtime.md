@@ -50,7 +50,7 @@ In folder-bundle mode (D21) the launcher always dispatches `_python/python.exe`,
 8. **Fast path (D14, no lock):** if `site_dir.is_dir()` AND `MOONLIT_FORCE_EXTRACT` is unset → goto 11.
 9. **Slow path:** acquire **lock_path** (Section 5). Re-check `site_dir.is_dir()` AND `MOONLIT_FORCE_EXTRACT` unset; if both true (sibling won the race), release lock and goto 11.
 10. Extract (Section 6). Atomically install (D4). Sweep stale `.old.<otherpid>` siblings best-effort. Then, when GC is enabled (env.json `gc.enabled` and not `MOONLIT_NO_GC`), run the same-app cache self-GC (D24, specs/04-cache-layout.md §12.2) best-effort — still under the held lock. Release lock in `finally`. Both the sweep and the reap are best-effort: any failure is swallowed and never changes the exit code.
-11. Verify the staged tree does not collide with `_bootstrap` (Section 7). Call `site.addsitedir(str(site_dir))`.
+11. Verify the staged tree does not collide with `_bootstrap` (Section 7). Call `site.addsitedir(str(site_dir))` with the host tail of `sys.path` detached, then re-attach it behind the bundle block (Section 7, D26).
 12. Resolve entry point (Section 8). Import + invoke with no arguments.
 13. Coerce return value (Section 8). Mask `& 0xFF`. Return.
 
@@ -157,6 +157,26 @@ def _try_lock(fd):
 
 Call `site.addsitedir(str(site_dir))`. This processes `.pth` files. The archive remains on `sys.path[0]` so that `_bootstrap` itself is still importable for the duration of the call.
 
+**Placement (D26).** `addsitedir` appends, which would leave the bundled tree behind every host site dir already on `sys.path`, so a stale host copy of a bundled distribution would win both the import and the `importlib.metadata` lookup. The bootstrap therefore:
+
+1. Snapshots `sys.path` and computes the **bundle slot** once: immediately before the first host site dir that follows the stdlib entry, or the end when there is none.
+2. Detaches the **host tail** (`sys.path[slot:]`) and calls `site.addsitedir(str(site_dir))` without it. `site_dir` and everything the bundle's `.pth` files append therefore land ahead of the whole tail, and the bundle's `.pth` `import` lines see the bundle and everything ahead of it (including `PYTHONPATH`), never the tail. A tail entry that bundled `.pth` code re-adds is dropped from the block, since the tail comes back behind it anyway. The accepted trade-off: bundled `.pth` code that relies on the tail (importing a module present only on the host, or removing a host site dir) fails (`site.py` reports it, skips the rest of that `.pth` file, and continues); a self-contained bundle never needs either.
+3. Re-attaches the host tail in a `finally`. Entries new since the snapshot (wherever a `.pth` `import` line inserted them, even index 0) form one contiguous block, in their relative order, just ahead of the tail; pre-existing entries keep their relative order. Membership is checked against the snapshot list, not a set, so unhashable junk on `sys.path` is tolerated.
+
+Resulting precedence, highest first:
+
+1. `sys.path[0]`, the archive itself.
+2. `PYTHONPATH` entries (standard Python semantics; D26 covers environments that set it implicitly).
+3. The stdlib (`python3XY.zip`, `lib/python3.X` / `Lib`, `lib-dynload` / `DLLs`). A bundled distribution must never shadow it.
+4. The bundled block.
+5. Host site dirs (user site, venv or system `site-packages`, Debian `dist-packages`) and everything host `.pth` files appended after them.
+
+A **host site dir** is a `sys.path` entry that normalizes to the same path as an entry of `site.getsitepackages()` or of `site.getusersitepackages()` (skipped when it returns `None`). Normalization is `os.path.realpath` on POSIX, so a symlink respelling still matches (Homebrew's `sitecustomize` rewrites the site dir's spelling), and `os.path.normcase(os.path.abspath(...))` on Windows, where `realpath` opens handles and can stall on offline UNC paths (Section 11). It is matched by membership, never by basename, so a `PYTHONPATH` entry that merely ends in `site-packages` is not a host site dir. Non-str entries (e.g. `None` left by host startup code) match nothing. On Windows, `site.getsitepackages()` includes the interpreter or venv prefix root itself, so that root counts as a host site dir (it follows `Lib` on `sys.path`).
+
+The **stdlib entry** is the `sys.path` entry that normalizes to `os.path.dirname(os.__file__)`. `os` is frozen by default (`-X frozen_modules=on`), so that is `sys._stdlib_dir` rather than a path inside `python3XY.zip`, and a `PYTHONPATH` copy of `os.py` cannot respell it. Only a host site dir *after* the stdlib entry can anchor the bundle slot. That bound is what keeps a bundled module from shadowing the stdlib, and it holds whenever the stdlib dir is on `sys.path`, which it always is on standard POSIX and Windows installs and venvs. A host site dir reached through `PYTHONPATH` (e.g. Docker's `PYTHONPATH=/opt/venv/lib/python3.13/site-packages`, run with that venv's python) sits ahead of the stdlib, and `site.py` does not add it a second time, so no anchor follows the stdlib: the block is appended and the `PYTHONPATH` copy keeps precedence. (On Windows the venv root anchors the block instead, with the same outcome.) The block is likewise appended when no host site dir is on `sys.path` at all (e.g. `python -S`). When the stdlib dir cannot be located (`os.__file__` missing, or its dir not on `sys.path`, e.g. the Windows embeddable distro, whose `._pth` file also disables `PYTHONPATH`), the host search starts at index 0.
+
+**Known limitation.** Host code that runs at interpreter startup, before the bootstrap, is out of reach: `sitecustomize` / `usercustomize` and `import` lines in host `.pth` files can import a module into `sys.modules` or insert a `sys.meta_path` finder ahead of the path finder. Reordering `sys.path` cannot undo either, and evicting `sys.modules` entries is unsafe, so the bootstrap does neither. If such code pre-imports a bundled module, the host copy runs while `importlib.metadata` reports the bundled version. For the user site, recipients can run with `-s` / `PYTHONNOUSERSITE=1` (or `-I`, which also ignores `PYTHON*` variables). Startup code in a venv or system site dir is skipped only by `-S`, which also removes every host site dir from `sys.path`, the `exit()` / `quit()` builtins, and any host `.pth`-based startup fixes (e.g. CA certificate injection).
+
 **Collision check:** if `os.listdir(site_dir)` contains an entry whose **case-folded** name equals `"_bootstrap"`, exit 1 with `"_bootstrap collision in staged tree"`. Case-fold comparison covers Windows / HFS+ case-insensitive filesystems.
 
 ## 8. Entry point resolution and return-value coercion
@@ -233,7 +253,7 @@ The bootstrap MUST import only from the Python 3.13 standard library. Allowed mo
 | `sys` | `sys.argv`, `sys.exit`, `sys.path`, `sys.stdlib_module_names`, `sys.version_info` |
 | `json` | env.json parse |
 | `zipfile` | archive read + entry extraction |
-| `site` | `site.addsitedir` |
+| `site` | `site.addsitedir`; `site.getsitepackages` / `site.getusersitepackages` to locate host site dirs (D26) |
 | `importlib` | entry-point import |
 | `time` | lock poll deadline |
 | `pathlib` | `Path` |

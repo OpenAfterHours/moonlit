@@ -1,14 +1,16 @@
 """sys.path setup, entry-point resolution, and return-value coercion.
 
-Implements specs/03-bootstrap-runtime.md §7 (collision check, addsitedir)
-and §8 (entry-point parsing, import, getattr walk, invocation, return-value
-coercion). Failures from this module raise either CollisionError (exit 1)
-or EntryPointError (exit 2) per the D3 runtime enumeration.
+Implements specs/03-bootstrap-runtime.md §7 (collision check, addsitedir,
+D26 placement ahead of host site dirs) and §8 (entry-point parsing, import,
+getattr walk, invocation, return-value coercion). Failures from this module
+raise either CollisionError (exit 1) or EntryPointError (exit 2) per the D3
+runtime enumeration.
 """
 
 import importlib
 import os
 import site
+import sys
 from pathlib import Path
 from typing import Any, cast
 
@@ -22,7 +24,7 @@ def run(env: Environment, site_dir: Path) -> int:
     Returns an int in [0, 255] suitable for ``sys.exit``.
     """
     _check_no_bootstrap_collision(site_dir)
-    site.addsitedir(str(site_dir))
+    _activate_site_dir(site_dir)
     entry_point_str = _resolve_entry_point_string(env)
     module_name, attr = _parse_entry_point(entry_point_str)
     obj = _import_and_resolve(module_name, attr)
@@ -39,6 +41,74 @@ def _check_no_bootstrap_collision(site_dir: Path) -> None:
     for entry in os.listdir(site_dir):
         if entry.casefold() == "_bootstrap":
             raise CollisionError("_bootstrap collision in staged tree")
+
+
+def _activate_site_dir(site_dir: Path) -> None:
+    # D26: addsitedir appends, which lets any host site dir shadow a bundled
+    # distribution. Detach the host tail (from the bundle slot on) while it runs:
+    # site_dir and whatever the bundle's .pth files add then land ahead of that
+    # tail, and their `import` lines never see it.
+    snapshot = list(sys.path)
+    slot = _bundle_slot(snapshot)
+    host_tail = sys.path[slot:]
+    del sys.path[slot:]
+    try:
+        site.addsitedir(str(site_dir))
+    finally:
+        sys.path[:] = [*_gather_bundle_block(sys.path, snapshot, slot), *host_tail]
+
+
+def _bundle_slot(entries: list[str]) -> int:
+    # Just ahead of the first host site dir AFTER the stdlib. One reached via
+    # PYTHONPATH sits ahead of the stdlib and must not lift the bundle above it.
+    # Host startup code can leave non-str junk (e.g. None) here; it matches nothing.
+    normalized = [_normalize(entry) if isinstance(entry, str) else None for entry in entries]
+    host_dirs = _host_site_dirs()
+    for index in range(_stdlib_index(normalized) + 1, len(normalized)):
+        if normalized[index] in host_dirs:
+            return index
+    # No host site dir after the stdlib (e.g. `python -S`): nothing to shadow.
+    return len(normalized)
+
+
+def _host_site_dirs() -> set[str]:
+    # getusersitepackages() is None on platforms with no home dir (WASI, iOS, …).
+    candidates = [*site.getsitepackages(), site.getusersitepackages()]
+    return {_normalize(path) for path in candidates if path}
+
+
+def _stdlib_index(normalized: list[str | None]) -> int:
+    # os is frozen by default, so os.__file__ is {sys._stdlib_dir}/os.py
+    # and a PYTHONPATH copy can't respell it. When that dir isn't on sys.path
+    # (e.g. the Windows embeddable distro), -1 makes the host search start at 0.
+    os_file = getattr(os, "__file__", None)
+    if os_file is None:
+        return -1
+    stdlib = _normalize(os.path.dirname(os_file))
+    if stdlib not in normalized:
+        return -1
+    return normalized.index(stdlib)
+
+
+def _normalize(path: str) -> str:
+    # POSIX resolves symlinks: a respelled site dir (e.g. Homebrew's
+    # sitecustomize) must still match. Windows folds case instead; realpath there
+    # opens handles and can stall on offline UNC paths (spec §11).
+    if os.name == "nt":
+        return os.path.normcase(os.path.abspath(path))
+    return os.path.realpath(path)
+
+
+def _gather_bundle_block(head: list[str], snapshot: list[str], slot: int) -> list[str]:
+    # Entries new since the snapshot form the block, in their relative order,
+    # wherever a bundled .pth `import` line inserted them (even index 0). A host
+    # tail entry that bundled .pth code re-added is dropped: the tail comes back
+    # behind the block anyway. List membership, not a set: host startup code can
+    # leave unhashable junk here.
+    ahead = snapshot[:slot]
+    kept = [entry for entry in head if entry in ahead]
+    block = [entry for entry in head if entry not in snapshot]
+    return [*kept, *block]
 
 
 def _resolve_entry_point_string(env: Environment) -> str:
